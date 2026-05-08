@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ISL Communication Assistant</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+
+    <div class="app-container">
+        <!-- Sidebar Navigation -->
+        <nav class="sidebar">
+            <div class="logo-container">
+                <i class="fa-solid fa-hands-asl-interpreting"></i>
+                <h2>ISL Assistant</h2>
+            </div>
+            <ul class="nav-links">
+                <li class="active" data-target="module1">
+                    <i class="fa-solid fa-video"></i> Sign to Speech
+                </li>
+                <li data-target="module2">
+                    <i class="fa-solid fa-comment-dots"></i> Text to Sign
+                </li>
+            </ul>
+            <div class="sidebar-footer">
+                <p>Final Year Project</p>
+            </div>
+        </nav>
+
+        <!-- Main Content Area -->
+        <main class="content-area">
+            
+            <!-- Module 1: Sign to Speech -->
+            <section id="module1" class="module-section active">
+                <div class="header">
+                    <h1>Real-Time ISL Detection</h1>
+                    <p>Detect hand gestures via webcam and translate to speech.</p>
+                </div>
+
+                <div class="video-container glass-panel">
+                    <div class="video-wrapper">
+                        <!-- Stream will be populated here -->
+                        <img id="video-stream" src="" alt="Webcam Stream Not Active">
+                        <div class="overlay-info">
+                            <div class="prediction-box">
+                                Sign: <span id="current-pred">?</span> 
+                                <small>(<span id="pred-conf">0</span>%)</small>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="controls-panel">
+                        <div class="word-display">
+                            <h3>Current Word:</h3>
+                            <div class="word-box" id="current-word"></div>
+                        </div>
+                        
+                        <div class="action-buttons">
+                            <button id="btn-add" class="btn btn-primary" title="Shortcut: Space"><i class="fa-solid fa-plus"></i> Add (Space)</button>
+                            <button id="btn-speak" class="btn btn-success" title="Shortcut: Enter"><i class="fa-solid fa-volume-high"></i> Speak (Enter)</button>
+                            <button id="btn-back" class="btn btn-warning" title="Shortcut: Backspace"><i class="fa-solid fa-delete-left"></i> Back</button>
+                            <button id="btn-clear" class="btn btn-danger" title="Shortcut: C"><i class="fa-solid fa-trash"></i> Clear (C)</button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Module 2: Text / Speech to Sign -->
+            <section id="module2" class="module-section hidden">
+                <div class="header">
+                    <h1>Text & Speech to Sign</h1>
+                    <p>Convert your spoken or written words into Indian Sign Language images.</p>
+                </div>
+
+                <div class="text-to-sign-container glass-panel">
+                    <div class="input-area">
+                        <div class="input-group">
+                            <input type="text" id="text-input" placeholder="Type a word or sentence here...">
+                            <button id="btn-mic" class="btn btn-icon"><i class="fa-solid fa-microphone"></i></button>
+                        </div>
+                        <div class="action-buttons w-100" style="display: flex; gap: 10px;">
+                            <button id="btn-translate" class="btn btn-primary" style="flex: 1;">Translate to Sign</button>
+                            <button id="btn-text-to-speech" class="btn btn-success" style="flex: 1;"><i class="fa-solid fa-volume-high"></i> Speak Text</button>
+                        </div>
+                    </div>
+
+                    <div class="slideshow-area" id="slideshow-area" style="display: none;">
+                        <h3 id="slideshow-status">Showing signs for: <span id="playing-word"></span></h3>
+                        
+                        <div class="sign-display">
+                            <img id="current-sign-img" src="" alt="Sign">
+                            <div class="no-image-placeholder" id="no-image-placeholder">
+                                <span id="no-image-char"></span>
+                                <p>No image found</p>
+                            </div>
+                        </div>
+
+                        <div class="progress-bar-container">
+                            <div class="progress-bar" id="sign-progress"></div>
+                        </div>
+
+                        <div class="slideshow-controls">
+                            <span id="slide-counter">1 / 5</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+        </main>
+    </div>
+
+    <script src="{{ url_for('static', filename='main.js') }}"></script>
+</body>
+</html>
