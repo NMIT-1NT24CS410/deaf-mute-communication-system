@@ -33,7 +33,7 @@ except Exception as e:
 # Initialize MediaPipe
 mp_hands = mp.solutions.hands
 mp_drawing = mp.solutions.drawing_utils
-hands = mp_hands.Hands(max_num_hands=1, min_detection_confidence=0.7, min_tracking_confidence=0.5)
+hands = mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.5, min_tracking_confidence=0.5)
 
 def normalize_landmarks(hand_landmarks):
     # Extract relative coordinates relative to wrist (landmark 0)
@@ -53,8 +53,23 @@ def normalize_landmarks(hand_landmarks):
         
     return normalized
 
+def extract_two_hands(results):
+    left_features = [0.0] * 42
+    right_features = [0.0] * 42
+    
+    if results.multi_hand_landmarks and results.multi_handedness:
+        for hand_landmarks, handedness in zip(results.multi_hand_landmarks, results.multi_handedness):
+            features = normalize_landmarks(hand_landmarks)
+            label = handedness.classification[0].label
+            if label == 'Left':
+                left_features = features
+            else:
+                right_features = features
+                
+    return left_features + right_features
+
 def generate_frames():
-    global current_prediction, confidence_score
+    global current_word, current_prediction, confidence_score
     cap = cv2.VideoCapture(0)
     
     if not cap.isOpened():
@@ -74,28 +89,60 @@ def generate_frames():
             img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             results = hands.process(img_rgb)
 
+            if not hasattr(generate_frames, "stable_frames"):
+                generate_frames.stable_frames = 0
+                generate_frames.no_hands_frames = 0
+                generate_frames.last_prediction = "?"
+
             if results.multi_hand_landmarks:
+                generate_frames.no_hands_frames = 0
                 for hand_landmarks in results.multi_hand_landmarks:
                     mp_drawing.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS,
                                               mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=2, circle_radius=2),
                                               mp_drawing.DrawingSpec(color=(0, 0, 255), thickness=2, circle_radius=2))
                     
-                    # Extract coordinates
-                    features = normalize_landmarks(hand_landmarks)
-                    features = np.array([features])
+                # Extract coordinates
+                features = extract_two_hands(results)
+                features = np.array([features], dtype=np.float32)
+                
+                # Predict
+                try:
+                    preds = model(features, training=False).numpy()[0]
+                    class_idx = np.argmax(preds)
+                    confidence_score = float(preds[class_idx])
                     
-                    # Predict
-                    try:
-                        preds = model.predict(features, verbose=0)[0]
-                        class_idx = np.argmax(preds)
-                        confidence_score = float(preds[class_idx])
+                    if confidence_score > 0.6:  # Threshold
+                        current_prediction = str(class_names[class_idx])
+                    else:
+                        current_prediction = "?"
                         
-                        if confidence_score > 0.6:  # Threshold
-                            current_prediction = str(class_names[class_idx])
+                    # Auto-form word logic (Stabilization)
+                    if current_prediction != "?":
+                        if current_prediction == generate_frames.last_prediction:
+                            generate_frames.stable_frames += 1
+                            if generate_frames.stable_frames == 7: # Held for 7 frames (faster response)
+                                if len(current_prediction) > 1:
+                                    if current_word and not current_word.endswith(" "):
+                                        current_word += " "
+                                    current_word += current_prediction + " "
+                                else:
+                                    current_word += current_prediction
                         else:
-                            current_prediction = "?"
-                    except Exception as e:
-                        print(f"Prediction Error: {e}")
+                            generate_frames.stable_frames = 0
+                        generate_frames.last_prediction = current_prediction
+                    else:
+                        generate_frames.stable_frames = 0
+                        generate_frames.last_prediction = "?"
+
+                except Exception as e:
+                    print(f"Prediction Error: {e}")
+            else:
+                current_prediction = "?"
+                generate_frames.stable_frames = 0
+                generate_frames.no_hands_frames += 1
+                if generate_frames.no_hands_frames == 30: # 30 frames without hands
+                    if len(current_word) > 0 and current_word[-1] != " ":
+                        current_word += " "
 
         # Encode frame to JPEG
         ret, buffer = cv2.imencode('.jpg', frame)
@@ -108,6 +155,10 @@ def generate_frames():
     cap.release()
 
 @app.route('/')
+def home():
+    return render_template('home.html')
+
+@app.route('/dashboard')
 def index():
     return render_template('index.html')
 
@@ -132,7 +183,12 @@ def handle_action():
     
     if action == 'add':
         if current_prediction and current_prediction != "?":
-            current_word += current_prediction
+            if len(current_prediction) > 1:
+                if current_word and not current_word.endswith(" "):
+                    current_word += " "
+                current_word += current_prediction + " "
+            else:
+                current_word += current_prediction
     elif action == 'backspace':
         if len(current_word) > 0:
             current_word = current_word[:-1]
@@ -151,11 +207,70 @@ def text_to_sign():
     data = request.json
     text = data.get('text', '').upper().strip()
     
-    # Extract alphanumeric chars
-    chars = [c for c in text if c.isalnum()]
-    
-    # We will return a list of character strings, frontend will map them to images or placeholders
-    return jsonify({"chars": chars})
+    words = text.split()
+    steps = []
+    signs_dir = os.path.join(os.getcwd(), 'isl_signs')
+    for word in words:
+        # Check if there is an image for the full word
+        word_found_in_signs = False
+        for ext in [".jpg", ".jpeg", ".png"]:
+            if os.path.exists(os.path.join(signs_dir, word + ext)):
+                word_found_in_signs = True
+                break
+                
+        if word_found_in_signs:
+            steps.append({
+                "type": "word",
+                "label": word,
+                "frames": [f"/signs/{word}.jpg"]
+            })
+        else:
+            # Check if there's a folder in dataset
+            dataset_word_dir = os.path.join(os.getcwd(), 'dataset', word)
+            if os.path.isdir(dataset_word_dir) and os.listdir(dataset_word_dir):
+                files = [f for f in os.listdir(dataset_word_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
+                if files:
+                    # Sort files numerically
+                    def extract_number(filename):
+                        try:
+                            return int(os.path.splitext(filename)[0])
+                        except ValueError:
+                            return filename
+                    files.sort(key=extract_number)
+                    
+                    # Downsample to 25 frames
+                    num_frames = 25
+                    if len(files) > num_frames:
+                        indices = np.linspace(0, len(files) - 1, num_frames, dtype=int)
+                        selected_files = [files[idx] for idx in indices]
+                    else:
+                        selected_files = files
+                        
+                    frames = [f"/dataset_signs/{word}/{f}" for f in selected_files]
+                    steps.append({
+                        "type": "word",
+                        "label": word,
+                        "frames": frames
+                    })
+                    continue
+            
+            # Fallback to character spelling
+            for char in word:
+                if char.isalnum():
+                    steps.append({
+                        "type": "char",
+                        "label": char,
+                        "frames": [f"/signs/{char}.jpg"]
+                    })
+                    
+    return jsonify({"steps": steps})
+
+@app.route('/dataset_signs/<word>/<filename>')
+def get_dataset_sign(word, filename):
+    import os
+    from flask import send_from_directory
+    dataset_word_dir = os.path.join(os.getcwd(), 'dataset', word)
+    return send_from_directory(dataset_word_dir, filename)
 
 @app.route('/signs/<filename>')
 def get_sign(filename):
@@ -164,6 +279,24 @@ def get_sign(filename):
     signs_dir = os.path.join(os.getcwd(), 'isl_signs')
     if not os.path.exists(signs_dir):
         os.makedirs(signs_dir)
+        
+    # Check if file exists in signs_dir
+    file_path = os.path.join(signs_dir, filename)
+    if os.path.exists(file_path):
+        return send_from_directory(signs_dir, filename)
+        
+    # If not found, check if it's a word-level sign in the dataset directory
+    word, ext = os.path.splitext(filename)
+    dataset_word_dir = os.path.join(os.getcwd(), 'dataset', word)
+    if os.path.exists(dataset_word_dir) and os.path.isdir(dataset_word_dir):
+        files = [f for f in os.listdir(dataset_word_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
+        if files:
+            # Return the middle image (usually a stable representation of the gesture)
+            files.sort()
+            middle_file = files[len(files) // 2]
+            return send_from_directory(dataset_word_dir, middle_file)
+            
+    # Default fallback
     return send_from_directory(signs_dir, filename)
 
 if __name__ == '__main__':

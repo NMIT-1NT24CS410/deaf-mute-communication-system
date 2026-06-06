@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # ISL Communication Assistant — Final Year Project
 ### Deaf & Mute People Communication App
 
@@ -124,6 +123,3 @@ isl_project/
 ## Team Credits
 Final Year Project — B.Tech CSE
 Communication Assistant for Deaf and Mute People
-=======
-
->>>>>>> fa283310b6dff6e0849f5986106171e9e3ce79d0

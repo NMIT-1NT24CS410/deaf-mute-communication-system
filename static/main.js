@@ -190,31 +190,57 @@ document.addEventListener('DOMContentLoaded', () => {
             });
             const data = await res.json();
             
-            if (data.chars && data.chars.length > 0) {
-                runSlideshow(data.chars, text);
+            if (data.steps && data.steps.length > 0) {
+                runSlideshow(data.steps, text);
             } else {
-                alert("No alphanumeric characters found to translate.");
+                alert("No alphanumeric characters or words found to translate.");
             }
         } catch (e) {
             console.error('Translation error:', e);
         }
     }
 
-    async function runSlideshow(chars, originalText) {
+    function preloadFrames(frameUrls) {
+        return Promise.all(frameUrls.map(url => {
+            return new Promise((resolve) => {
+                const img = new Image();
+                img.onload = () => resolve(img);
+                img.onerror = () => resolve(null);
+                img.src = url;
+            });
+        }));
+    }
+
+    async function runSlideshow(steps, originalText) {
         isSlideshowRunning = true;
         slideshowArea.style.display = 'flex';
         playingWordEl.textContent = originalText;
         
-        for (let i = 0; i < chars.length; i++) {
-            const char = chars[i];
-            slideCounter.textContent = `${i + 1} / ${chars.length}`;
-            progressBar.style.width = `${((i + 1) / chars.length) * 100}%`;
+        for (let i = 0; i < steps.length; i++) {
+            const step = steps[i];
+            slideCounter.textContent = `${i + 1} / ${steps.length}`;
+            progressBar.style.width = `${((i + 1) / steps.length) * 100}%`;
             
-            // Try loading image
-            await displaySign(char);
-            
-            // Wait 1.5s per sign
-            await new Promise(resolve => setTimeout(resolve, 1500));
+            if (step.frames.length > 1) {
+                // Play dynamic word animation
+                // Preload all frames for smooth playback
+                await preloadFrames(step.frames);
+                
+                // Render animation at ~120ms per frame (increase to slow down, decrease to speed up)
+                const animationFrameDelay = 120;
+                for (let f = 0; f < step.frames.length; f++) {
+                    signImgEl.src = step.frames[f];
+                    signImgEl.style.display = 'block';
+                    placeholderEl.style.display = 'none';
+                    await new Promise(resolve => setTimeout(resolve, animationFrameDelay));
+                }
+                // Leave the final frame on screen briefly
+                await new Promise(resolve => setTimeout(resolve, 300));
+            } else {
+                // Single sign (character or static image)
+                await displaySign(step.frames[0], step.label);
+                await new Promise(resolve => setTimeout(resolve, 1200));
+            }
         }
 
         // Reset
@@ -225,27 +251,30 @@ document.addEventListener('DOMContentLoaded', () => {
         }, 1000);
     }
 
-    function displaySign(char) {
+    function displaySign(url, label) {
         return new Promise((resolve) => {
-            const imgUrl = `/signs/${char}.jpg`;
             const img = new Image();
             
             img.onload = () => {
-                signImgEl.src = imgUrl;
+                signImgEl.src = url;
                 signImgEl.style.display = 'block';
                 placeholderEl.style.display = 'none';
                 resolve();
             };
             
             img.onerror = () => {
-                // If .jpg fails, could try .png, but for simplicity we fall back to placeholder
                 signImgEl.style.display = 'none';
                 placeholderEl.style.display = 'flex';
-                placeholderCharEl.textContent = char;
+                placeholderCharEl.textContent = label;
+                if (label.length > 1) {
+                    placeholderCharEl.style.fontSize = '2rem';
+                } else {
+                    placeholderCharEl.style.fontSize = ''; // Fallback to CSS default (5rem)
+                }
                 resolve();
             };
             
-            img.src = imgUrl;
+            img.src = url;
         });
     }
 

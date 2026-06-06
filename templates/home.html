@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ISL Communication Assistant</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='home.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+
+<body>
+
+    <div class="home-container">
+
+        <!-- Hero Section Card -->
+        <header class="hero-card">
+            <span class="project-tag">Final Year Project</span>
+            <h1 class="project-title">ISL Communication Assistant</h1>
+            <p class="project-description">
+                Bridging the gap between the deaf/mute community and the hearing world. This application uses AI-powered
+                gesture recognition to translate Indian Sign Language into text and speech, as well as text/voice back
+                into visual sign language.
+            </p>
+
+            <a href="/dashboard" class="launch-button" id="btn-launch">
+                <span>Launch Assistant Workspace</span>
+                <i class="fa-solid fa-arrow-right-long"></i>
+            </a>
+        </header>
+
+        <!-- Features Overview Grid -->
+        <section class="features-grid">
+
+            <!-- Module 1 Card -->
+            <div class="feature-card">
+                <div class="feature-icon-wrapper">
+                    <i class="fa-solid fa-video"></i>
+                </div>
+                <h3 class="feature-title">Module 1: Sign to Text/Speech</h3>
+                <p class="feature-desc">
+                    Allows users to show Indian Sign Language (ISL) gestures in front of their webcam. The AI extracts
+                    hand landmarks in real-time, translates them into characters/words, and plays them aloud using
+                    text-to-speech.
+                </p>
+            </div>
+
+            <!-- Module 2 Card -->
+            <div class="feature-card module2-card">
+                <div class="feature-icon-wrapper">
+                    <i class="fa-solid fa-comment-dots"></i>
+                </div>
+                <h3 class="feature-title">Module 2: Text/Voice to Sign</h3>
+                <p class="feature-desc">
+                    Allows a hearing person to type text or speak using the microphone. The application parses the input
+                    and runs an animated sign language slideshow showing the corresponding ISL gestures.
+                </p>
+            </div>
+
+        </section>
+
+        <!-- Footer -->
+        <footer class="home-footer">
+            <p class="credits-text">Created for <strong>Deaf & Mute People Communication</strong> · B.E CSE Final
+                Year Project</p>
+        </footer>
+
+    </div>
+
+</body>
+
+</html>
