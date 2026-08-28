@@ -2,12 +2,17 @@ import os
 import cv2
 import time
 import json
+import base64
+import threading
 import mediapipe as mp
 import numpy as np
 import tensorflow as tf
 from flask import Flask, render_template, Response, request, jsonify
+from flask_socketio import SocketIO, emit, join_room, leave_room
 
 app = Flask(__name__)
+socketio = SocketIO(app, cors_allowed_origins="*")
+mediapipe_lock = threading.Lock()
 
 # Constants and Global State
 MODEL_DIR = "model"
@@ -87,7 +92,8 @@ def generate_frames():
         # Process Hand Landmarks
         if model_loaded:
             img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            results = hands.process(img_rgb)
+            with mediapipe_lock:
+                results = hands.process(img_rgb)
 
             if not hasattr(generate_frames, "stable_frames"):
                 generate_frames.stable_frames = 0
@@ -111,7 +117,7 @@ def generate_frames():
                     class_idx = np.argmax(preds)
                     confidence_score = float(preds[class_idx])
                     
-                    if confidence_score > 0.6:  # Threshold
+                    if confidence_score > 0.55:  # Threshold
                         current_prediction = str(class_names[class_idx])
                     else:
                         current_prediction = "?"
@@ -299,8 +305,103 @@ def get_sign(filename):
     # Default fallback
     return send_from_directory(signs_dir, filename)
 
+def perform_prediction(image_data):
+    global model, class_names, model_loaded
+    if not model_loaded or model is None:
+        return {"prediction": "?", "confidence": 0.0, "error": "Model not loaded"}
+        
+    try:
+        header, encoded = image_data.split(",", 1)
+        nparr = np.frombuffer(base64.b64decode(encoded), np.uint8)
+        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        if frame is None:
+            return {"prediction": "?", "confidence": 0.0, "error": "Failed to decode image"}
+            
+        prediction = "?"
+        confidence = 0.0
+        results = None
+        
+        with mediapipe_lock:
+            # 1. Try with flipped frame first (matches laptop webcam dataset)
+            flipped_frame = cv2.flip(frame, 1)
+            img_rgb_flipped = cv2.cvtColor(flipped_frame, cv2.COLOR_BGR2RGB)
+            results = hands.process(img_rgb_flipped)
+            
+            if results.multi_hand_landmarks:
+                features = extract_two_hands(results)
+                features = np.array([features], dtype=np.float32)
+                preds = model(features, training=False).numpy()[0]
+                class_idx = np.argmax(preds)
+                confidence = float(preds[class_idx])
+                if confidence > 0.55:
+                    prediction = str(class_names[class_idx])
+            
+            # 2. Try with raw unflipped frame if confidence is low (for some phone cameras)
+            # CRITICAL OPTIMIZATION: Only process unflipped if a hand was actually detected.
+            # If no hands are found in the flipped image, none will be found in the unflipped image.
+            if (prediction == "?" or confidence < 0.55) and results and results.multi_hand_landmarks:
+                img_rgb_raw = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                results_raw = hands.process(img_rgb_raw)
+                if results_raw.multi_hand_landmarks:
+                    features = extract_two_hands(results_raw)
+                    features = np.array([features], dtype=np.float32)
+                    preds = model(features, training=False).numpy()[0]
+                    class_idx = np.argmax(preds)
+                    raw_confidence = float(preds[class_idx])
+                    if raw_confidence > confidence and raw_confidence > 0.55:
+                        confidence = raw_confidence
+                        prediction = str(class_names[class_idx])
+                        results = results_raw
+
+        # Console logging for diagnostics
+        if results and getattr(results, 'multi_hand_landmarks', None):
+            print(f"[PREDICT] Hands: {len(results.multi_hand_landmarks)} | Gesture: {prediction} ({confidence*100:.1f}%)")
+        else:
+            print("[PREDICT] No hands detected in frame.")
+                
+        return {
+            "prediction": prediction,
+            "confidence": confidence
+        }
+    except Exception as e:
+        print(f"Prediction logic error: {e}")
+        return {"prediction": "?", "confidence": 0.0, "error": str(e)}
+
+@app.route('/predict', methods=['POST'])
+def predict_gesture():
+    data = request.json
+    image_data = data.get('image')
+    if not image_data:
+        return jsonify({"prediction": "?", "confidence": 0.0, "error": "No image data"})
+    res = perform_prediction(image_data)
+    return jsonify(res)
+
+@socketio.on('predict-frame')
+def handle_predict_frame(data):
+    image_data = data.get('image')
+    if not image_data:
+        return {"prediction": "?", "confidence": 0.0, "error": "No image data"}
+    return perform_prediction(image_data)
+
+# Socket.IO Event Handlers
+@socketio.on('join')
+def on_join(data):
+    room = data.get('room')
+    name = data.get('name', 'User')
+    join_room(room)
+    print(f"[SOCKET] Client {request.sid} ({name}) joined room: {room}")
+    emit('peer-joined', {"socketId": request.sid, "name": name}, room=room, include_self=False)
+
+@socketio.on('signal')
+def on_signal(data):
+    room = data.get('room')
+    emit('signal', data, room=room, include_self=False)
+
+@socketio.on('chat-message')
+def on_chat_message(data):
+    room = data.get('room')
+    emit('chat-message', data, room=room, include_self=False)
+
 if __name__ == '__main__':
-
-    app.run(debug=True, threaded=True)
-
-# Trigger reload
+    socketio.run(app, host='0.0.0.0', port=5000, debug=True, allow_unsafe_werkzeug=True)

@@ -50,30 +50,73 @@ def main():
     # 3. Train/Test Split
     X_train, X_test, y_train, y_test = train_test_split(X, y_encoded, test_size=0.2, random_state=42, stratify=y_encoded)
     
-    print(f"[INFO] Training samples: {len(X_train)}")
+    print(f"[INFO] Original training samples: {len(X_train)}")
     print(f"[INFO] Testing samples: {len(X_test)}")
+
+    # 3.1 Data Augmentation (Hand-Swap and Jittering) on Training Set only
+    # Hand Swap to make model invariant to MediaPipe handedness misclassification
+    X_swap = np.zeros_like(X_train)
+    X_swap[:, :42] = X_train[:, 42:]
+    X_swap[:, 42:] = X_train[:, :42]
+
+    # Combine original and swapped features
+    X_train_aug = np.concatenate([X_train, X_swap], axis=0)
+    y_train_aug = np.concatenate([y_train, y_train], axis=0)
+
+    # Coordinate Jittering (simulating hand trembles and webcam noise)
+    noise_level = 0.015
+    noise = np.random.normal(0, noise_level, X_train_aug.shape)
+    
+    # Keeping wrist base coordinates (indices 0, 1, 42, 43) as exact 0.0
+    noise[:, 0] = 0.0
+    noise[:, 1] = 0.0
+    noise[:, 42] = 0.0
+    noise[:, 43] = 0.0
+    
+    X_train_jitter = X_train_aug + noise
+    
+    # Combine original, swapped, and jittered versions into the final training dataset
+    X_train_final = np.concatenate([X_train_aug, X_train_jitter], axis=0)
+    y_train_final = np.concatenate([y_train_aug, y_train_aug], axis=0)
+
+    print(f"[INFO] Augmented training samples: {len(X_train_final)}")
 
     # 4. Build Model
     model = tf.keras.models.Sequential([
         tf.keras.layers.Input(shape=(84,)),
         tf.keras.layers.Dense(256, activation='relu'),
-        tf.keras.layers.Dropout(0.2),
+        tf.keras.layers.BatchNormalization(),
+        tf.keras.layers.Dropout(0.3),
+        
+        tf.keras.layers.Dense(128, activation='relu'),
+        tf.keras.layers.BatchNormalization(),
+        tf.keras.layers.Dropout(0.3),
+        
         tf.keras.layers.Dense(64, activation='relu'),
+        tf.keras.layers.BatchNormalization(),
         tf.keras.layers.Dropout(0.2),
+        
         tf.keras.layers.Dense(num_classes, activation='softmax')
     ])
 
-    model.compile(optimizer='adam',
+    model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
                   loss='sparse_categorical_crossentropy',
                   metrics=['accuracy'])
 
     # 5. Train Model
-    print("\n[INFO] Starting training...")
+    print("\n[INFO] Starting training with Early Stopping...")
+    early_stop = tf.keras.callbacks.EarlyStopping(
+        monitor='val_loss',
+        patience=12,
+        restore_best_weights=True
+    )
+    
     history = model.fit(
-        X_train, y_train,
-        epochs=50,
-        batch_size=32,
-        validation_data=(X_test, y_test)
+        X_train_final, y_train_final,
+        epochs=100,
+        batch_size=64,
+        validation_data=(X_test, y_test),
+        callbacks=[early_stop]
     )
 
     # 6. Evaluate

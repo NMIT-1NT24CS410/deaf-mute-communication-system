@@ -21,6 +21,63 @@ import speech_recognition as sr
 import os
 import time
 import numpy as np
+import urllib.request
+import urllib.parse
+import json
+
+TRANSLATIONS_KN_TO_EN = {
+    "ನಮಸ್ಕಾರ": "HELLO",
+    "ಧನ್ಯವಾದಗಳು": "THANK_YOU",
+    "ಹೌದು": "YES",
+    "ಇಲ್ಲ": "NO",
+    "ದಯವಿಟ್ಟು": "PLEASE",
+    "ಸಹಾಯ": "HELP",
+    "ಹೋಗಿ ಬರುತ್ತೇನೆ": "GOODBYE",
+    "ಕ್ಷಮಿಸಿ": "SORRY",
+    "ಸ್ವಾಗತ": "WELCOME",
+    "ಇನ್ನಷ್ಟು": "MORE",
+    "ತಿನ್ನು": "EAT",
+    "ಕುಡಿ": "DRINK",
+    "ತಂದೆ": "FATHER",
+    "ತಾಯಿ": "MOTHER",
+    "ಸ್ನೇಹಿತ": "FRIEND",
+    "ಸಂತೋಷ": "HAPPY",
+    "ದುಃಖ": "SAD",
+}
+
+def translate_text(text, sl="kn", tl="en"):
+    if not text.strip():
+        return ""
+    
+    clean_text = text.strip()
+    if sl == "kn" and tl == "en":
+        if clean_text in TRANSLATIONS_KN_TO_EN:
+            return TRANSLATIONS_KN_TO_EN[clean_text]
+        # Check if query is combination of known words
+        words = clean_text.split()
+        en_words = []
+        all_found = True
+        for w in words:
+            if w in TRANSLATIONS_KN_TO_EN:
+                en_words.append(TRANSLATIONS_KN_TO_EN[w])
+            else:
+                all_found = False
+                break
+        if all_found:
+            return " ".join(en_words)
+            
+    # Fallback to dynamic google translation API
+    try:
+        encoded_text = urllib.parse.quote(clean_text)
+        url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl={sl}&tl={tl}&dt=t&q={encoded_text}"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=3) as response:
+            res = json.loads(response.read().decode('utf-8'))
+            if res and res[0] and res[0][0] and res[0][0][0]:
+                return res[0][0][0]
+    except Exception:
+        pass
+    return text
 
 # -- Config ------------------------------------------------------------------
 SIGNS_DIR    = "isl_signs"   # folder with A.jpg, B.jpg, ... Z.jpg, 1.jpg...
@@ -37,7 +94,7 @@ def speak(text):
 
 
 # -- Speech recognition -------------------------------------------------------
-def listen_from_mic():
+def listen_from_mic(language="en-US"):
     recognizer = sr.Recognizer()
     with sr.Microphone() as source:
         print("[MIC] Adjusting for ambient noise ...")
@@ -45,9 +102,10 @@ def listen_from_mic():
         print("[MIC] Listening ... speak now!")
         try:
             audio = recognizer.listen(source, timeout=6)
-            text  = recognizer.recognize_google(audio)
+            text  = recognizer.recognize_google(audio, language=language)
             print(f"[MIC] Recognized: '{text}'")
-            return text.upper()
+            return text
+
         except sr.WaitTimeoutError:
             print("[MIC] No speech detected.")
             return ""
@@ -229,6 +287,19 @@ def main():
     print("  ISL Text / Speech -> Sign Language Display")
     print("=" * 50)
 
+    print("Select language / ಭಾಷೆಯನ್ನು ಆಯ್ಕೆ ಮಾಡಿ:")
+    print("  1 - English")
+    print("  2 - ಕನ್ನಡ (Kannada)")
+    lang_choice = input("Enter choice (1/2): ").strip()
+    use_kannada = lang_choice == "2"
+
+    if use_kannada:
+        voices = engine.getProperty('voices')
+        for voice in voices:
+            if 'kannada' in voice.name.lower() or 'kn' in voice.id.lower():
+                engine.setProperty('voice', voice.id)
+                break
+
     while True:
         print("\nChoose input method:")
         print("  1 - Type text")
@@ -239,14 +310,27 @@ def main():
         if choice == "1":
             text = input("Type your text: ").strip()
             if text:
-                speak(f"Showing sign language for: {text}")
-                display_signs(text)
+                if use_kannada:
+                    translated_text = translate_text(text, sl="kn", tl="en")
+                    print(f"[TRANSLATION] Translated '{text}' to English '{translated_text}'")
+                    speak(text)
+                    display_signs(translated_text)
+                else:
+                    speak(f"Showing sign language for: {text}")
+                    display_signs(text)
 
         elif choice == "2":
-            text = listen_from_mic()
+            lang_code = "kn-IN" if use_kannada else "en-US"
+            text = listen_from_mic(language=lang_code)
             if text:
-                speak(f"Showing sign language for: {text}")
-                display_signs(text)
+                if use_kannada:
+                    translated_text = translate_text(text, sl="kn", tl="en")
+                    print(f"[TRANSLATION] Translated '{text}' to English '{translated_text}'")
+                    speak(text)
+                    display_signs(translated_text)
+                else:
+                    speak(f"Showing sign language for: {text}")
+                    display_signs(text)
             else:
                 print("[INFO] Nothing heard, try again.")
 

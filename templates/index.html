@@ -24,7 +24,17 @@
                 <li data-target="module2">
                     <i class="fa-solid fa-comment-dots"></i> Text to Sign
                 </li>
+                <li data-target="module3">
+                    <i class="fa-solid fa-phone"></i> Video Call (Two Devices)
+                </li>
             </ul>
+            <div class="language-selector-container">
+                <label for="lang-select"><i class="fa-solid fa-globe"></i> Language / ಭಾಷೆ</label>
+                <select id="lang-select" class="lang-dropdown">
+                    <option value="en">English</option>
+                    <option value="kn">ಕನ್ನಡ (Kannada)</option>
+                </select>
+            </div>
             <div class="sidebar-footer">
                 <p>Final Year Project</p>
             </div>
@@ -108,10 +118,138 @@
                     </div>
                 </div>
             </section>
+            
+            <!-- Module 3: Real-Time Video Call -->
+            <section id="module3" class="module-section hidden">
+                <div class="header">
+                    <h1>Bilingual Video Call</h1>
+                    <p>Connect two devices to communicate via WebRTC video call with sign and speech translation.</p>
+                </div>
+
+                <!-- Setup / Join Room screen -->
+                <div id="video-call-setup" class="call-setup-container glass-panel">
+                    <h2><i class="fa-solid fa-network-wired"></i> Enter Room</h2>
+                    <p>Join a shared Room ID from another computer or phone to start the video call.</p>
+                    <div class="setup-controls" style="display: flex; flex-direction: column; gap: 12px; width: 100%; max-width: 400px; margin-top: 1rem;">
+                        <input type="text" id="call-name-input" placeholder="Your Name (e.g. Rahul)" style="width: 100%;">
+                        <input type="text" id="call-room-input" placeholder="Room ID (e.g. 1234)" value="1234" style="width: 100%;">
+                        <button id="btn-join-call" class="btn btn-primary" style="width: 100%;"><i class="fa-solid fa-phone"></i> Connect / Join</button>
+                    </div>
+                    <div class="call-status-banner" id="call-status"><i class="fa-solid fa-circle-info"></i> Status: Disconnected</div>
+                </div>
+
+                <!-- Active Call Dashboard -->
+                <div id="video-call-active" class="call-active-dashboard" style="display: none;">
+                    <div class="call-layout-grid">
+                        
+                        <!-- Local User Video -->
+                        <div class="video-card glass-panel">
+                            <div class="video-card-header">
+                                <h3><i class="fa-solid fa-circle-user"></i> Local Feed (You)</h3>
+                            </div>
+                            <div class="video-viewport">
+                                <video id="local-video" autoplay playsinline muted></video>
+                                <div class="overlay-info">
+                                    <div class="prediction-box">
+                                        Sign: <span id="call-local-pred">?</span> 
+                                        <small>(<span id="call-local-conf">0</span>%)</small>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="video-controls">
+                                <button id="btn-toggle-cam" class="btn btn-primary btn-icon active-control" title="Toggle Camera"><i class="fa-solid fa-video"></i></button>
+                                <button id="btn-toggle-mic" class="btn btn-primary btn-icon active-control" title="Toggle Microphone"><i class="fa-solid fa-microphone"></i></button>
+                                <button id="btn-toggle-tracking" class="btn btn-success btn-icon active-control" title="Toggle Sign Recognition"><i class="fa-solid fa-hands-asl-interpreting"></i></button>
+                            </div>
+                        </div>
+
+                        <!-- Remote User Video -->
+                        <div class="video-card glass-panel">
+                            <div class="video-card-header">
+                                <h3><i class="fa-solid fa-user-group"></i> Remote Feed (Peer)</h3>
+                            </div>
+                            <div class="video-viewport">
+                                <video id="remote-video" autoplay playsinline></video>
+                                <div class="remote-captions-overlay" id="remote-captions">
+                                    Waiting for peer signs...
+                                </div>
+                            </div>
+                            <div class="video-controls">
+                                <button id="btn-leave-call" class="btn btn-danger w-100"><i class="fa-solid fa-phone-slash"></i> Disconnect</button>
+                            </div>
+                        </div>
+
+                    </div>
+
+                    <!-- Live Call Transcript Panel -->
+                    <div class="chat-transcript-panel glass-panel" style="margin-top: 1.5rem; padding: 1.5rem; display: flex; flex-direction: column; gap: 10px;">
+                        <h3 style="font-size: 1.1rem; font-weight: 700; display: flex; align-items: center; gap: 8px;"><i class="fa-solid fa-history"></i> Live Call Transcript</h3>
+                        <div id="call-chat-logs" class="chat-logs-viewport" style="max-height: 200px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: 10px; background: rgba(0,0,0,0.2); border-radius: 8px; min-height: 100px;">
+                            <div class="system-message" style="color: var(--text-secondary); font-style: italic; font-size: 0.9rem; text-align: center;">Waiting for call participants...</div>
+                        </div>
+                    </div>
+
+                    <!-- Translation and Chat Console -->
+                    <div class="translation-console-panel glass-panel">
+                        <div class="console-column">
+                            <h3><i class="fa-solid fa-hands"></i> Gesture Word Builder</h3>
+                            <div class="word-display">
+                                <h3>Local Confirmed Word:</h3>
+                                <div class="word-box" id="call-word-box"></div>
+                            </div>
+                            <div class="action-buttons">
+                                <button id="btn-call-add" class="btn btn-primary" title="Shortcut: Space"><i class="fa-solid fa-plus"></i> Add (Space)</button>
+                                <button id="btn-call-send-word" class="btn btn-success" title="Shortcut: Enter"><i class="fa-solid fa-paper-plane"></i> Send Word (Enter)</button>
+                                <button id="btn-call-back" class="btn btn-warning" title="Shortcut: Backspace"><i class="fa-solid fa-delete-left"></i> Back</button>
+                                <button id="btn-call-clear" class="btn btn-danger" title="Shortcut: C"><i class="fa-solid fa-trash"></i> Clear (C)</button>
+                            </div>
+                        </div>
+
+                        <div class="console-column border-left">
+                            <h3><i class="fa-solid fa-comments"></i> Chat & Vocal Control</h3>
+                            <div class="chat-input-area">
+                                <div class="input-group">
+                                    <input type="text" id="call-chat-input" placeholder="Type a message to send or translate...">
+                                    <button id="btn-call-mic" class="btn btn-icon" title="Voice Input"><i class="fa-solid fa-microphone"></i></button>
+                                </div>
+                                <div class="action-buttons w-100" style="display: flex; gap: 10px; margin-top: 10px;">
+                                    <button id="btn-call-send-text" class="btn btn-primary" style="flex: 1;"><i class="fa-solid fa-paper-plane"></i> Send Text Response</button>
+                                    <button id="btn-call-speak-text" class="btn btn-success" style="flex: 1;"><i class="fa-solid fa-volume-high"></i> Speak Text</button>
+                                </div>
+                            </div>
+                            <div class="settings-toggles">
+                                <label class="toggle-switch">
+                                    <input type="checkbox" id="chk-auto-speak" checked>
+                                    <span>Auto-Speak Incoming Signs (Deaf -> Hearing)</span>
+                                </label>
+                                <label class="toggle-switch">
+                                    <input type="checkbox" id="chk-auto-sign" checked>
+                                    <span>Auto-Sign Incoming Text (Hearing -> Deaf)</span>
+                                </label>
+                            </div>
+                            
+                            <!-- Embedded Mini Slideshow for Incoming Signs -->
+                            <div class="mini-slideshow glass-panel" id="mini-slideshow" style="display: none;">
+                                <div class="mini-slideshow-header">
+                                    <h4>Incoming Gesture Slideshow: <span id="mini-playing-word"></span></h4>
+                                </div>
+                                <div class="mini-sign-display">
+                                    <img id="mini-current-sign-img" src="" alt="Sign">
+                                    <div class="no-image-placeholder" id="mini-no-image-placeholder" style="display: none;">
+                                        <span id="mini-no-image-char"></span>
+                                        <p>No image found</p>
+                                    </div>
+                                </div>
+                            </div>
+
+                        </div>
+                    </div>
+                </div>
 
         </main>
     </div>
 
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <script src="{{ url_for('static', filename='main.js') }}"></script>
 </body>
 </html>

@@ -10,3 +10,5 @@ SpeechRecognition==3.10.0
 Pillow==10.0.0
 tqdm==4.66.1
 Flask==3.0.0
+flask-socketio==5.6.1
+simple-websocket==1.1.0

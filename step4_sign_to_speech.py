@@ -19,14 +19,67 @@ import numpy as np
 import tensorflow as tf
 import pyttsx3
 import os
+import urllib.request
+import urllib.parse
+import json
 
 MODEL_DIR = "model"
 MODEL_H5 = os.path.join(MODEL_DIR, "isl_model.h5")
 LABEL_ENCODER = os.path.join(MODEL_DIR, "label_encoder.npy")
 
+TRANSLATIONS_EN_TO_KN = {
+    "HELLO": ("ನಮಸ್ಕಾರ", "Namaskara"),
+    "THANK_YOU": ("ಧನ್ಯವಾದಗಳು", "Dhanyavadagalu"),
+    "YES": ("ಹೌದು", "Haudu"),
+    "NO": ("ಇಲ್ಲ", "Illa"),
+    "PLEASE": ("ದಯವಿಟ್ಟು", "Dayavittu"),
+    "HELP": ("ಸಹಾಯ", "Sahaya"),
+    "GOODBYE": ("ಹೋಗಿ ಬರುತ್ತೇನೆ", "Hogi baruttene"),
+    "SORRY": ("ಕ್ಷಮಿಸಿ", "Kshamisi"),
+    "WELCOME": ("ಸ್ವಾಗತ", "Swagata"),
+    "MORE": ("ಇನ್ನಷ್ಟು", "Innashtu"),
+    "EAT": ("ತಿನ್ನು", "Tinnu"),
+    "DRINK": ("ಕುಡಿ", "Kudi"),
+    "FATHER": ("ತಂದೆ", "Tande"),
+    "MOTHER": ("ತಾಯಿ", "Tayi"),
+    "FRIEND": ("ಸ್ನೇಹಿತ", "Snehita"),
+    "HAPPY": ("ಸಂತೋಷ", "Santosa"),
+    "SAD": ("ದುಃಖ", "Dukha"),
+}
+
+def get_translation(text, sl="en", tl="kn"):
+    """Returns (kannada_unicode, phonetic_romanized)"""
+    if not text or text == "?":
+        return text, text
+    
+    key = text.upper().replace(" ", "_").strip()
+    if key in TRANSLATIONS_EN_TO_KN:
+        return TRANSLATIONS_EN_TO_KN[key]
+    
+    # Fallback to dynamic translation API
+    try:
+        encoded_text = urllib.parse.quote(text.strip())
+        url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl={sl}&tl={tl}&dt=t&q={encoded_text}"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=3) as response:
+            res = json.loads(response.read().decode('utf-8'))
+            if res and res[0] and res[0][0] and res[0][0][0]:
+                translated = res[0][0][0]
+                return translated, translated
+    except Exception:
+        pass
+    return text, text
+
 # Initialize TTS
 engine = pyttsx3.init()
 engine.setProperty('rate', 140)
+
+def setup_voice(use_kannada):
+    voices = engine.getProperty('voices')
+    for voice in voices:
+        if use_kannada and ('kannada' in voice.name.lower() or 'kn' in voice.id.lower()):
+            engine.setProperty('voice', voice.id)
+            break
 
 def speak(text):
     if text.strip():
@@ -91,9 +144,35 @@ def main():
         print("[ERROR] Could not open webcam.")
         return
 
+    # Prompt for language
+    print("\nSelect language / ಭಾಷೆಯನ್ನು ಆಯ್ಕೆ ಮಾಡಿ:")
+    print("  1 - English")
+    print("  2 - ಕನ್ನಡ (Kannada)")
+    lang_choice = input("Enter choice (1/2): ").strip()
+    use_kannada = lang_choice == "2"
+    setup_voice(use_kannada)
+
     current_word = ""
+    current_word_kn = ""
+    current_word_phonetic = ""
     current_prediction = ""
     confidence = 0.0
+
+    def update_bilingual_words(english_word_str):
+        nonlocal current_word_kn, current_word_phonetic
+        if not english_word_str.strip():
+            current_word_kn = ""
+            current_word_phonetic = ""
+            return
+        words = english_word_str.strip().split()
+        kn_u_list = []
+        kn_p_list = []
+        for w in words:
+            u, p = get_translation(w)
+            kn_u_list.append(u)
+            kn_p_list.append(p)
+        current_word_kn = " ".join(kn_u_list)
+        current_word_phonetic = " ".join(kn_p_list)
 
     print("[INFO] Webcam active. Press 'Q' to quit.")
 
@@ -128,8 +207,11 @@ def main():
             class_idx = np.argmax(preds)
             confidence = preds[class_idx]
             
-            if confidence > 0.6:  # Threshold
+            if confidence > 0.55:  # Threshold
                 current_prediction = class_names[class_idx]
+                if use_kannada and current_prediction != "?" and current_prediction != main.last_prediction:
+                    uni, _ = get_translation(current_prediction)
+                    print(f"[PREDICTION] Sign: {current_prediction} -> {uni} ({confidence*100:.1f}%)")
             else:
                 current_prediction = "?"
                 
@@ -144,7 +226,11 @@ def main():
                             current_word += current_prediction + " "
                         else:
                             current_word += current_prediction
-                        print(f"[INFO] Auto-added -> {current_word}")
+                        update_bilingual_words(current_word)
+                        if use_kannada:
+                            print(f"[INFO] Auto-added -> {current_word_kn} ({current_word_phonetic})")
+                        else:
+                            print(f"[INFO] Auto-added -> {current_word}")
                 else:
                     main.stable_frames = 0
                 main.last_prediction = current_prediction
@@ -158,17 +244,21 @@ def main():
             if main.no_hands_frames == 30: # 30 frames without hands
                 if len(current_word) > 0 and current_word[-1] != " ":
                     current_word += " "
+                    update_bilingual_words(current_word)
                     print("[INFO] Auto-added space")
 
         # Overlay GUI elements
         # Top banner for current word
         cv2.rectangle(frame, (0, 0), (w, 60), (0, 0, 0), -1)
-        cv2.putText(frame, f"Word: {current_word}", (20, 40), 
+        display_word = current_word_phonetic if use_kannada else current_word
+        cv2.putText(frame, f"Word: {display_word}", (20, 40), 
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
         
         # Bottom left for current prediction
         cv2.rectangle(frame, (0, h - 80), (300, h), (0, 0, 0), -1)
-        cv2.putText(frame, f"Sign: {current_prediction} ({confidence*100:.1f}%)", (20, h - 30), 
+        _, pred_ph = get_translation(current_prediction)
+        display_pred = pred_ph if use_kannada else current_prediction
+        cv2.putText(frame, f"Sign: {display_pred} ({confidence*100:.1f}%)", (20, h - 30), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
 
         # Bottom right for controls info
@@ -189,17 +279,28 @@ def main():
                     current_word += current_prediction + " "
                 else:
                     current_word += current_prediction
-                print(f"[INFO] Added -> {current_word}")
+                update_bilingual_words(current_word)
+                if use_kannada:
+                    print(f"[INFO] Added -> {current_word_kn} ({current_word_phonetic})")
+                else:
+                    print(f"[INFO] Added -> {current_word}")
         elif key == 13: # ENTER
             if current_word:
-                print(f"[INFO] Speaking: {current_word}")
-                speak(current_word)
+                if use_kannada:
+                    print(f"[INFO] Speaking (Kannada): {current_word_kn} ({current_word_phonetic})")
+                    speak(current_word_kn)
+                else:
+                    print(f"[INFO] Speaking (English): {current_word}")
+                    speak(current_word)
                 current_word = "" # Clear after speaking
+                update_bilingual_words(current_word)
         elif key == 8: # BACKSPACE
             if len(current_word) > 0:
                 current_word = current_word[:-1]
+                update_bilingual_words(current_word)
         elif key == ord('c') or key == ord('C'):
             current_word = ""
+            update_bilingual_words(current_word)
             print("[INFO] Cleared word.")
 
     cap.release()
