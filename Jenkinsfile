@@ -100,35 +100,43 @@ pipeline {
         // 3. SONARQUBE ANALYSIS
         // ==========================================
 
-        stage('SonarQube Analysis') {
-            steps {
-                withSonarQubeEnv('SonarQube') {
-                    sh '''
-                        set -eu
+        
+stage('SonarQube Analysis') {
+    steps {
+        withSonarQubeEnv('SonarQube') {
+            sh '''
+                set -eu
 
-                        echo "===== SONARQUBE ANALYSIS ====="
+                echo "===== SONARQUBE ANALYSIS ====="
 
-                        docker run --rm \
-                            --user "$(id -u):$(id -g)" \
-                            --network host \
-                            -e SONAR_HOST_URL="$SONAR_HOST_URL" \
-                            -e SONAR_TOKEN="$SONAR_AUTH_TOKEN" \
-                            -v "$WORKSPACE:/usr/src" \
-                            -w /usr/src \
-                            "$SONAR_SCANNER_IMAGE" \
-                            -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
-                            -Dsonar.projectName="ISL Communication Assistant" \
-                            -Dsonar.projectVersion="$BUILD_NUMBER" \
-                            -Dsonar.working.directory=/usr/src/.scannerwork \
-                            -Dsonar.sources=app.py \
-                            -Dsonar.tests=tests \
-                            -Dsonar.test.inclusions="tests/**/*.py" \
-                            -Dsonar.python.coverage.reportPaths=reports/coverage.xml \
-                            -Dsonar.exclusions="dataset/**,model/**,isl_signs/**,reports/**,*.csv,**/__pycache__/**"
-                    '''
-                }
-            }
+                mkdir -p "$WORKSPACE/.sonar/cache"
+                mkdir -p "$WORKSPACE/.scannerwork"
+
+                docker run --rm \
+                    --user "$(id -u):$(id -g)" \
+                    --network host \
+                    -e SONAR_HOST_URL="$SONAR_HOST_URL" \
+                    -e SONAR_TOKEN="$SONAR_AUTH_TOKEN" \
+                    -e SONAR_USER_HOME=/usr/src/.sonar \
+                    -v "$WORKSPACE:/usr/src" \
+                    -w /usr/src \
+                    "$SONAR_SCANNER_IMAGE" \
+                    -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
+                    -Dsonar.projectName="ISL Communication Assistant" \
+                    -Dsonar.projectVersion="$BUILD_NUMBER" \
+                    -Dsonar.working.directory=/usr/src/.scannerwork \
+                    -Dsonar.sources=app.py \
+                    -Dsonar.tests=tests \
+                    -Dsonar.test.inclusions="tests/**/*.py" \
+                    -Dsonar.python.coverage.reportPaths=reports/coverage.xml \
+                    -Dsonar.exclusions="dataset/**,model/**,isl_signs/**,reports/**,*.csv,**/__pycache__/**"
+
+                echo "===== SONARQUBE ANALYSIS COMPLETED ====="
+            '''
         }
+    }
+}
+
 
         // ==========================================
         // 4. SONARQUBE QUALITY GATE
