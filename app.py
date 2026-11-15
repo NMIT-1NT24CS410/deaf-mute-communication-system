@@ -369,20 +369,44 @@ def perform_prediction(image_data):
         return {"prediction": "?", "confidence": 0.0, "error": str(e)}
 
 
+
 @app.route('/predict', methods=['POST'])
 def predict_gesture():
     global current_prediction, confidence_score
 
-    try:
-        data = request.get_json(silent=True) or {}
-        image_data = data.get('image')
+    data = request.get_json(silent=True) or {}
+    image_data = data.get('image')
 
-        if not image_data:
-            return jsonify({
-                "prediction": "?",
-                "confidence": 0.0,
-                "error": "No image data received"
-            }), 400
+    if not image_data:
+        current_prediction = "?"
+        confidence_score = 0.0
+
+        return jsonify({
+            "prediction": "?",
+            "confidence": 0.0,
+            "error": "No image data"
+        }), 200
+
+    try:
+        result = perform_prediction(image_data)
+
+        current_prediction = result.get("prediction", "?")
+        confidence_score = float(result.get("confidence", 0.0))
+
+        return jsonify({
+            "prediction": current_prediction,
+            "confidence": confidence_score
+        }), 200
+
+    except Exception as error:
+        app.logger.exception("Prediction failed")
+
+        return jsonify({
+            "prediction": "?",
+            "confidence": 0.0,
+            "error": "Prediction failed"
+        }), 500
+
 
         # Process the webcam frame received from the browser
         res = perform_prediction(image_data)
