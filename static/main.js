@@ -141,6 +141,142 @@ document.addEventListener('DOMContentLoaded', () => {
     const navLinks = document.querySelectorAll('.nav-links li');
     const sections = document.querySelectorAll('.module-section');
     const videoStream = document.getElementById('video-stream');
+    
+// Module 1 laptop webcam
+let module1CameraStream = null;
+let module1PredictionTimer = null;
+let module1FrameBusy = false;
+
+const module1Canvas = document.createElement('canvas');
+const module1Context = module1Canvas.getContext('2d');
+
+// Start laptop webcam
+async function startModule1Camera() {
+    try {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            throw new Error("Camera API is not available. Please use HTTPS.");
+        }
+
+        if (module1CameraStream) {
+            return;
+        }
+
+        module1CameraStream = await navigator.mediaDevices.getUserMedia({
+            video: {
+                facingMode: "user",
+                width: { ideal: 640 },
+                height: { ideal: 480 }
+            },
+            audio: false
+        });
+
+        videoStream.srcObject = module1CameraStream;
+
+        await videoStream.play();
+
+        console.log("[Module 1] Laptop camera started successfully.");
+
+        module1PredictionTimer = setInterval(sendModule1Frame, 500);
+
+    } catch (error) {
+        console.error("[Module 1] Camera error:", error);
+
+        alert("Unable to start your camera: " + error.message);
+    }
+}
+
+// Send webcam frames to Flask prediction API
+async function sendModule1Frame() {
+    if (
+        module1FrameBusy ||
+        !module1CameraStream ||
+        !videoStream ||
+        videoStream.readyState < 2 ||
+        videoStream.videoWidth === 0
+    ) {
+        return;
+    }
+
+    module1FrameBusy = true;
+
+    try {
+        const width = 320;
+        const height = Math.round(
+            videoStream.videoHeight *
+            (width / videoStream.videoWidth)
+        );
+
+        module1Canvas.width = width;
+        module1Canvas.height = height;
+
+        module1Context.drawImage(
+            videoStream,
+            0,
+            0,
+            width,
+            height
+        );
+
+        const imageData = module1Canvas.toDataURL("image/jpeg", 0.75);
+
+        const response = await fetch("/predict", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                image: imageData
+            })
+        });
+
+        if (!response.ok) {
+            throw new Error("Prediction API returned HTTP " + response.status);
+        }
+
+        const result = await response.json();
+
+        const predictionElement = document.getElementById("current-pred");
+        const confidenceElement = document.getElementById("pred-conf");
+
+        if (predictionElement) {
+            predictionElement.textContent = result.prediction || "?";
+        }
+
+        if (confidenceElement) {
+            confidenceElement.textContent = (
+                Number(result.confidence || 0) * 100
+            ).toFixed(1);
+        }
+
+    } catch (error) {
+        console.error("[Module 1] Frame prediction error:", error);
+
+    } finally {
+        module1FrameBusy = false;
+    }
+}
+
+// Stop laptop webcam
+function stopModule1Camera() {
+    if (module1PredictionTimer) {
+        clearInterval(module1PredictionTimer);
+        module1PredictionTimer = null;
+    }
+
+    if (module1CameraStream) {
+        module1CameraStream.getTracks().forEach(track => track.stop());
+        module1CameraStream = null;
+    }
+
+    if (videoStream) {
+        videoStream.srcObject = null;
+    }
+
+    module1FrameBusy = false;
+
+    console.log("[Module 1] Laptop camera stopped.");
+}
+
 
     navLinks.forEach(link => {
         link.addEventListener('click', () => {
