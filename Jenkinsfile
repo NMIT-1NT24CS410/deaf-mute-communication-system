@@ -1,4 +1,4 @@
-
+```groovy
 pipeline {
     agent any
 
@@ -100,43 +100,41 @@ pipeline {
         // 3. SONARQUBE ANALYSIS
         // ==========================================
 
-        
-stage('SonarQube Analysis') {
-    steps {
-        withSonarQubeEnv('SonarQube') {
-            sh '''
-                set -eu
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('SonarQube') {
+                    sh '''
+                        set -eu
 
-                echo "===== SONARQUBE ANALYSIS ====="
+                        echo "===== SONARQUBE ANALYSIS ====="
 
-                mkdir -p "$WORKSPACE/.sonar/cache"
-                mkdir -p "$WORKSPACE/.scannerwork"
+                        mkdir -p "$WORKSPACE/.sonar/cache"
+                        mkdir -p "$WORKSPACE/.scannerwork"
 
-                docker run --rm \
-                    --user "$(id -u):$(id -g)" \
-                    --network host \
-                    -e SONAR_HOST_URL="$SONAR_HOST_URL" \
-                    -e SONAR_TOKEN="$SONAR_AUTH_TOKEN" \
-                    -e SONAR_USER_HOME=/usr/src/.sonar \
-                    -v "$WORKSPACE:/usr/src" \
-                    -w /usr/src \
-                    "$SONAR_SCANNER_IMAGE" \
-                    -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
-                    -Dsonar.projectName="ISL Communication Assistant" \
-                    -Dsonar.projectVersion="$BUILD_NUMBER" \
-                    -Dsonar.working.directory=/usr/src/.scannerwork \
-                    -Dsonar.sources=app.py \
-                    -Dsonar.tests=tests \
-                    -Dsonar.test.inclusions="tests/**/*.py" \
-                    -Dsonar.python.coverage.reportPaths=reports/coverage.xml \
-                    -Dsonar.exclusions="dataset/**,model/**,isl_signs/**,reports/**,*.csv,**/__pycache__/**"
+                        docker run --rm \
+                            --user "$(id -u):$(id -g)" \
+                            --network host \
+                            -e SONAR_HOST_URL="$SONAR_HOST_URL" \
+                            -e SONAR_TOKEN="$SONAR_AUTH_TOKEN" \
+                            -e SONAR_USER_HOME=/usr/src/.sonar \
+                            -v "$WORKSPACE:/usr/src" \
+                            -w /usr/src \
+                            "$SONAR_SCANNER_IMAGE" \
+                            -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
+                            -Dsonar.projectName="ISL Communication Assistant" \
+                            -Dsonar.projectVersion="$BUILD_NUMBER" \
+                            -Dsonar.working.directory=/usr/src/.scannerwork \
+                            -Dsonar.sources=app.py \
+                            -Dsonar.tests=tests \
+                            -Dsonar.test.inclusions="tests/**/*.py" \
+                            -Dsonar.python.coverage.reportPaths=reports/coverage.xml \
+                            -Dsonar.exclusions="dataset/**,model/**,isl_signs/**,reports/**,*.csv,**/__pycache__/**"
 
-                echo "===== SONARQUBE ANALYSIS COMPLETED ====="
-            '''
+                        echo "===== SONARQUBE ANALYSIS COMPLETED ====="
+                    '''
+                }
+            }
         }
-    }
-}
-
 
         // ==========================================
         // 4. SONARQUBE QUALITY GATE
@@ -180,6 +178,16 @@ stage('SonarQube Analysis') {
                 sh '''
                     set -eu
 
+                    echo "===== CHECKING DATASET ====="
+
+                    if [ ! -d /opt/isl-data ]; then
+                        echo "ERROR: Dataset directory /opt/isl-data not found!"
+                        exit 1
+                    fi
+
+                    echo "Dataset directory found."
+                    du -sh /opt/isl-data
+
                     echo "===== DEPLOYING APPLICATION ====="
 
                     NEW_IMAGE="$DOCKER_IMAGE:$DOCKER_TAG"
@@ -194,6 +202,7 @@ stage('SonarQube Analysis') {
                         --name "$APP_CONTAINER" \
                         --restart unless-stopped \
                         -p "$APP_PORT:5000" \
+                        -v /opt/isl-data:/app/dataset:ro \
                         "$NEW_IMAGE"; then
 
                         echo "New deployment failed."
@@ -205,6 +214,7 @@ stage('SonarQube Analysis') {
                                 --name "$APP_CONTAINER" \
                                 --restart unless-stopped \
                                 -p "$APP_PORT:5000" \
+                                -v /opt/isl-data:/app/dataset:ro \
                                 "$OLD_IMAGE" || true
                         fi
 
@@ -239,6 +249,8 @@ stage('SonarQube Analysis') {
 
                         echo "Deployment health check failed."
 
+                        docker logs "$APP_CONTAINER" 2>/dev/null || true
+
                         docker rm -f "$APP_CONTAINER" 2>/dev/null || true
 
                         if [ -n "$OLD_IMAGE" ]; then
@@ -248,6 +260,7 @@ stage('SonarQube Analysis') {
                                 --name "$APP_CONTAINER" \
                                 --restart unless-stopped \
                                 -p "$APP_PORT:5000" \
+                                -v /opt/isl-data:/app/dataset:ro \
                                 "$OLD_IMAGE" || true
                         fi
 
@@ -257,6 +270,11 @@ stage('SonarQube Analysis') {
                     echo "===== DEPLOYMENT SUCCESSFUL ====="
 
                     docker ps --filter "name=$APP_CONTAINER"
+
+                    echo "===== DATASET MOUNT VERIFICATION ====="
+
+                    docker exec "$APP_CONTAINER" \
+                        sh -c 'du -sh /app/dataset && find /app/dataset -type f | wc -l'
                 '''
             }
         }
@@ -280,3 +298,4 @@ stage('SonarQube Analysis') {
         }
     }
 }
+```
