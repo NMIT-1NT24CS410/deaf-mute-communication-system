@@ -94,6 +94,7 @@ pipeline {
                             -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
                             -Dsonar.projectName="ISL Communication Assistant" \
                             -Dsonar.projectVersion="$BUILD_NUMBER" \
+                            -Dsonar.working.directory=/usr/src/.scannerwork \
                             -Dsonar.sources=app.py \
                             -Dsonar.tests=tests \
                             -Dsonar.test.inclusions="tests/**/*.py" \
