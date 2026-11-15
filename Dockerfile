@@ -51,7 +51,7 @@ COPY static/ static/
 # Copy AI model and sign-language resources
 COPY model/ model/
 COPY isl_signs/ isl_signs/
-COPY dataset/ dataset/
+
 
 # Python environment settings
 ENV PYTHONDONTWRITEBYTECODE=1
