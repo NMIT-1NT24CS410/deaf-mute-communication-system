@@ -85,6 +85,7 @@ pipeline {
                         set -eu
 
                         docker run --rm \
+                            --user "$(id -u):$(id -g)" \
                             --network host \
                             -e SONAR_HOST_URL="$SONAR_HOST_URL" \
                             -e SONAR_TOKEN="$SONAR_AUTH_TOKEN" \
