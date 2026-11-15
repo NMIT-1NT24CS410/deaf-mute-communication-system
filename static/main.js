@@ -490,6 +490,21 @@ document.addEventListener('DOMContentLoaded', () => {
                     'stun:stun1.l.google.com:19302',
                     'stun:stun2.l.google.com:19302'
                 ]
+            },
+            {
+                urls: 'turn:openrelay.metered.ca:80',
+                username: 'openrelayproject',
+                credential: 'openrelayproject'
+            },
+            {
+                urls: 'turn:openrelay.metered.ca:443',
+                username: 'openrelayproject',
+                credential: 'openrelayproject'
+            },
+            {
+                urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+                username: 'openrelayproject',
+                credential: 'openrelayproject'
             }
         ]
     };
@@ -578,14 +593,24 @@ document.addEventListener('DOMContentLoaded', () => {
             videoCallActive.style.display = 'block';
             callStatusEl.innerHTML = `<i class="fa-solid fa-circle-check"></i> Connected to Room: ${roomCode}`;
 
-            // Join socket room
-            socket.emit('join', { room: roomCode, name: userName });
+            // Initialize PeerConnection and set up all Socket.IO listeners BEFORE joining the room
+            initializePeerConnection();
+
+            // Wait for socket to connect, then join room
+            socket.on('connect', () => {
+                console.log('[Socket.IO] Connected, joining room:', roomCode);
+                socket.emit('join', { room: roomCode, name: userName });
+            });
+
+            // If socket is already connected (unlikely but safe)
+            if (socket.connected) {
+                console.log('[Socket.IO] Already connected, joining room:', roomCode);
+                socket.emit('join', { room: roomCode, name: userName });
+            }
 
             // Start processing hand landmarks locally and sending to server
             startCallPrediction();
 
-            // Initialize PeerConnection
-            initializePeerConnection();
         } catch (e) {
             console.error("Camera access failed:", e);
             alert("Failed to access camera/microphone. Ensure you are using HTTPS or localhost.");
@@ -594,14 +619,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function initializePeerConnection() {
         peerConnection = new RTCPeerConnection(peerConfiguration);
+        console.log('[WebRTC] PeerConnection created with config:', JSON.stringify(peerConfiguration));
 
         // Add local tracks to peer connection
         localStream.getTracks().forEach(track => {
             peerConnection.addTrack(track, localStream);
+            console.log('[WebRTC] Added local track:', track.kind);
         });
 
         // Remote track handling
         peerConnection.ontrack = (event) => {
+            console.log('[WebRTC] Received remote track:', event.track.kind);
             if (!remoteStream) {
                 remoteStream = new MediaStream();
                 remoteVideo.srcObject = remoteStream;
@@ -609,23 +637,53 @@ document.addEventListener('DOMContentLoaded', () => {
             event.streams[0].getTracks().forEach(track => {
                 remoteStream.addTrack(track);
             });
+            // Update status
+            const remoteCaptions = document.getElementById('remote-captions');
+            if (remoteCaptions) remoteCaptions.textContent = "Connected! Waiting for peer signs...";
         };
 
         // ICE candidate signaling
         peerConnection.onicecandidate = (event) => {
             if (event.candidate) {
+                console.log('[WebRTC] Sending ICE candidate:', event.candidate.type, event.candidate.protocol);
                 socket.emit('signal', {
                     room: roomCode,
                     type: 'candidate',
                     candidate: event.candidate
                 });
+            } else {
+                console.log('[WebRTC] All ICE candidates gathered.');
             }
+        };
+
+        // ICE connection state change (critical for debugging)
+        peerConnection.oniceconnectionstatechange = () => {
+            console.log('[WebRTC] ICE connection state:', peerConnection.iceConnectionState);
+            const statusEl = document.getElementById('call-status');
+            if (peerConnection.iceConnectionState === 'connected' || peerConnection.iceConnectionState === 'completed') {
+                if (statusEl) statusEl.innerHTML = `<i class="fa-solid fa-circle-check" style="color:#10b981"></i> Video Call Connected! Room: ${roomCode}`;
+            } else if (peerConnection.iceConnectionState === 'failed') {
+                console.error('[WebRTC] ICE connection FAILED — likely a NAT/firewall issue.');
+                if (statusEl) statusEl.innerHTML = `<i class="fa-solid fa-triangle-exclamation" style="color:#ef4444"></i> Connection failed. Try refreshing both devices.`;
+            } else if (peerConnection.iceConnectionState === 'disconnected') {
+                if (statusEl) statusEl.innerHTML = `<i class="fa-solid fa-circle-exclamation" style="color:#f59e0b"></i> Peer disconnected. Room: ${roomCode}`;
+            }
+        };
+
+        // ICE gathering state
+        peerConnection.onicegatheringstatechange = () => {
+            console.log('[WebRTC] ICE gathering state:', peerConnection.iceGatheringState);
+        };
+
+        // Connection state change
+        peerConnection.onconnectionstatechange = () => {
+            console.log('[WebRTC] Connection state:', peerConnection.connectionState);
         };
 
         // When a peer joins, the initiator creates an offer
         socket.on('peer-joined', async (data) => {
             peerName = data.name || "Peer";
-            console.log("[WebRTC] Peer joined, sending offer... Name:", peerName);
+            console.log("[WebRTC] Peer joined, I will create an offer. Peer name:", peerName);
             
             // Update remote header
             const remoteHeader = document.querySelector('.video-card:nth-child(2) .video-card-header h3');
@@ -636,6 +694,8 @@ document.addEventListener('DOMContentLoaded', () => {
             // Append system message to chat logs
             const chatLogs = document.getElementById('call-chat-logs');
             if (chatLogs) {
+                const placeholder = chatLogs.querySelector('.system-message');
+                if (placeholder) placeholder.remove();
                 const sysMsg = document.createElement('div');
                 sysMsg.className = 'system-message';
                 sysMsg.style.color = '#10b981';
@@ -656,6 +716,7 @@ document.addEventListener('DOMContentLoaded', () => {
             try {
                 const offer = await peerConnection.createOffer();
                 await peerConnection.setLocalDescription(offer);
+                console.log('[WebRTC] Offer created and set as local description.');
                 socket.emit('signal', {
                     room: roomCode,
                     type: 'offer',
@@ -671,6 +732,7 @@ document.addEventListener('DOMContentLoaded', () => {
             try {
                 if (data.type === 'name-intro') {
                     peerName = data.name || "Peer";
+                    console.log('[WebRTC] Received name-intro from peer:', peerName);
                     const remoteHeader = document.querySelector('.video-card:nth-child(2) .video-card-header h3');
                     if (remoteHeader) {
                         remoteHeader.innerHTML = `<i class="fa-solid fa-user-group"></i> Remote Feed (${peerName})`;
@@ -679,10 +741,27 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 
                 if (data.type === 'offer') {
-                    console.log("[WebRTC] Received offer, sending answer...");
+                    console.log("[WebRTC] Received offer, creating answer...");
+
+                    // Guard: if we already have a remote description, skip (prevents glare)
+                    if (peerConnection.signalingState !== 'stable' && peerConnection.signalingState !== 'have-local-offer') {
+                        console.warn('[WebRTC] Ignoring offer in state:', peerConnection.signalingState);
+                        return;
+                    }
+
+                    // If we also sent an offer (glare), the polite peer rolls back
+                    if (peerConnection.signalingState === 'have-local-offer') {
+                        console.log('[WebRTC] Glare detected — rolling back local offer (polite peer).');
+                        await peerConnection.setLocalDescription({ type: 'rollback' });
+                    }
+
                     await peerConnection.setRemoteDescription(new RTCSessionDescription(data.sdp));
+                    console.log('[WebRTC] Remote description (offer) set.');
+
                     const answer = await peerConnection.createAnswer();
                     await peerConnection.setLocalDescription(answer);
+                    console.log('[WebRTC] Answer created and set as local description.');
+
                     socket.emit('signal', {
                         room: roomCode,
                         type: 'answer',
@@ -690,10 +769,31 @@ document.addEventListener('DOMContentLoaded', () => {
                     });
                 } else if (data.type === 'answer') {
                     console.log("[WebRTC] Received answer, setting remote description...");
-                    await peerConnection.setRemoteDescription(new RTCSessionDescription(data.sdp));
+                    if (peerConnection.signalingState === 'have-local-offer') {
+                        await peerConnection.setRemoteDescription(new RTCSessionDescription(data.sdp));
+                        console.log('[WebRTC] Remote description (answer) set. Connection should be establishing...');
+                    } else {
+                        console.warn('[WebRTC] Ignoring answer in state:', peerConnection.signalingState);
+                    }
                 } else if (data.type === 'candidate') {
-                    console.log("[WebRTC] Received candidate...");
-                    await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+                    console.log("[WebRTC] Received ICE candidate.");
+                    if (peerConnection.remoteDescription) {
+                        await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+                    } else {
+                        // Queue candidates until remote description is set
+                        if (!peerConnection._queuedCandidates) peerConnection._queuedCandidates = [];
+                        peerConnection._queuedCandidates.push(data.candidate);
+                        console.log('[WebRTC] Queued ICE candidate (no remote description yet).');
+                    }
+                }
+
+                // Flush any queued candidates after remote description is set
+                if (peerConnection.remoteDescription && peerConnection._queuedCandidates && peerConnection._queuedCandidates.length > 0) {
+                    console.log(`[WebRTC] Flushing ${peerConnection._queuedCandidates.length} queued ICE candidates.`);
+                    for (const candidate of peerConnection._queuedCandidates) {
+                        await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+                    }
+                    peerConnection._queuedCandidates = [];
                 }
             } catch (e) {
                 console.error("[WebRTC] Signaling error:", e);
@@ -703,6 +803,38 @@ document.addEventListener('DOMContentLoaded', () => {
         // Handle incoming chat messages
         socket.on('chat-message', (data) => {
             handleIncomingMessage(data);
+        });
+
+        // Handle peer disconnection
+        socket.on('peer-left', (data) => {
+            const leftName = data.name || "Peer";
+            console.log('[WebRTC] Peer left:', leftName);
+
+            const chatLogs = document.getElementById('call-chat-logs');
+            if (chatLogs) {
+                const sysMsg = document.createElement('div');
+                sysMsg.className = 'system-message';
+                sysMsg.style.color = '#ef4444';
+                sysMsg.style.fontStyle = 'italic';
+                sysMsg.style.fontSize = '0.9rem';
+                sysMsg.style.textAlign = 'center';
+                sysMsg.textContent = `${leftName} left the call.`;
+                chatLogs.appendChild(sysMsg);
+                chatLogs.scrollTop = chatLogs.scrollHeight;
+            }
+
+            const remoteCaptions = document.getElementById('remote-captions');
+            if (remoteCaptions) remoteCaptions.textContent = "Peer disconnected.";
+
+            const statusEl = document.getElementById('call-status');
+            if (statusEl) statusEl.innerHTML = `<i class="fa-solid fa-circle-exclamation" style="color:#f59e0b"></i> ${leftName} left. Room: ${roomCode}`;
+
+            // Clean up remote stream
+            if (remoteStream) {
+                remoteStream.getTracks().forEach(track => track.stop());
+                remoteStream = null;
+                remoteVideo.srcObject = null;
+            }
         });
     }
 

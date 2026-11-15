@@ -385,13 +385,25 @@ def handle_predict_frame(data):
     return perform_prediction(image_data)
 
 # Socket.IO Event Handlers
+connected_users = {}  # sid -> {room, name}
+
 @socketio.on('join')
 def on_join(data):
     room = data.get('room')
     name = data.get('name', 'User')
     join_room(room)
+    connected_users[request.sid] = {'room': room, 'name': name}
     print(f"[SOCKET] Client {request.sid} ({name}) joined room: {room}")
     emit('peer-joined', {"socketId": request.sid, "name": name}, room=room, include_self=False)
+
+@socketio.on('disconnect')
+def on_disconnect():
+    user_info = connected_users.pop(request.sid, None)
+    if user_info:
+        room = user_info['room']
+        name = user_info['name']
+        print(f"[SOCKET] Client {request.sid} ({name}) disconnected from room: {room}")
+        emit('peer-left', {"socketId": request.sid, "name": name}, room=room)
 
 @socketio.on('signal')
 def on_signal(data):
