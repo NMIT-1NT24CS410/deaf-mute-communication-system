@@ -290,13 +290,15 @@ function stopModule1Camera() {
             document.getElementById(targetId).classList.add('active');
 
             // Handle Video Stream
-            if (targetId === 'module1') {
-                videoStream.src = '/video_feed';
-                startPollingState();
-            } else {
-                videoStream.src = ''; // Stop streaming to save resources
-                stopPollingState();
-            }
+            
+if (targetId === 'module1') {
+    startModule1Camera();
+    startPollingState();
+} else {
+    stopModule1Camera();
+    stopPollingState();
+}
+
 
             // Leave call if navigating away from Video Call
             if (targetId !== 'module3') {
@@ -1261,7 +1263,7 @@ function stopModule1Camera() {
 
     // Initialize stream on load if module1 is active
     if (document.getElementById('module1').classList.contains('active')) {
-        videoStream.src = '/video_feed';
-        startPollingState();
-    }
+    startModule1Camera();
+    startPollingState();
+}
 });
