@@ -1,206 +1,252 @@
-// =================================================================
-// Jenkinsfile — CI/CD Pipeline for ISL Communication Assistant
-// Tools: Jenkins + SonarQube + Docker + AWS (EC2 deployment)
-// =================================================================
-
 pipeline {
+
     agent any
 
     environment {
-        // ── Docker ──
-        DOCKER_IMAGE      = 'isl-communication-assistant'
-        DOCKER_TAG        = "${BUILD_NUMBER}"
-        DOCKER_REGISTRY   = ''  // e.g. 'your-account-id.dkr.ecr.ap-south-1.amazonaws.com'
 
-        // ── SonarQube ──
-        SONAR_HOST_URL    = 'http://sonarqube:9000'   // or your SonarQube server URL
+        // Docker Configuration
+        DOCKER_IMAGE = 'isl-communication-assistant'
+        DOCKER_TAG = "${BUILD_NUMBER}"
+
+        // SonarQube Configuration
         SONAR_PROJECT_KEY = 'isl-communication-assistant'
-        SONAR_TOKEN       = credentials('sonarqube-token')  // Jenkins credential ID
 
-        // ── AWS ──
-        AWS_REGION        = 'ap-south-1'
-        EC2_HOST          = ''  // e.g. 'ec2-xx-xx-xx-xx.ap-south-1.compute.amazonaws.com'
-        EC2_USER          = 'ubuntu'
-        SSH_KEY_ID        = 'aws-ec2-ssh-key'  // Jenkins SSH credential ID
+        // AWS EC2 Configuration
+        EC2_HOST = 'YOUR_EC2_PUBLIC_IP'
+        EC2_USER = 'ubuntu'
+
+        // Jenkins SSH Credential ID
+        SSH_KEY_ID = 'aws-ec2-ssh-key'
     }
 
     options {
         timestamps()
-        timeout(time: 30, unit: 'MINUTES')
+        timeout(time: 60, unit: 'MINUTES')
         disableConcurrentBuilds()
         buildDiscarder(logRotator(numToKeepStr: '10'))
     }
 
     stages {
 
-        // ── Stage 1: Checkout ──
+        // 1. Checkout
         stage('Checkout') {
             steps {
-                echo '📥 Checking out source code...'
+                echo 'Checking out GitHub repository...'
                 checkout scm
             }
         }
 
-        // ── Stage 2: Setup Python & Install Dependencies ──
+        // 2. Install Dependencies
         stage('Install Dependencies') {
             steps {
-                echo '🐍 Setting up Python environment...'
                 sh '''
                     python3 -m venv venv
                     . venv/bin/activate
+
                     pip install --upgrade pip
                     pip install -r requirements.txt
+
                     pip install pylint pytest pytest-cov flake8
                 '''
             }
         }
 
-        // ── Stage 3: Linting ──
-        stage('Lint') {
+        // 3. Lint
+        stage('Code Quality - Lint') {
             steps {
-                echo '🔍 Running code linting...'
                 sh '''
                     . venv/bin/activate
-                    flake8 app.py --max-line-length=120 --statistics --count || true
-                    pylint app.py --disable=all --enable=E --exit-zero
+
+                    flake8 app.py \
+                        --max-line-length=120 \
+                        --statistics \
+                        --count
                 '''
             }
         }
 
-        // ── Stage 4: Unit Tests ──
-        stage('Test') {
+        // 4. Unit Testing
+        stage('Unit Testing') {
+
             steps {
-                echo '🧪 Running unit tests...'
                 sh '''
+                    mkdir -p reports
+
                     . venv/bin/activate
-                    pytest tests/ --tb=short --junitxml=reports/test-results.xml \
-                           --cov=. --cov-report=xml:reports/coverage.xml || true
+
+                    pytest tests/ \
+                        --tb=short \
+                        --junitxml=reports/test-results.xml \
+                        --cov=. \
+                        --cov-report=xml:reports/coverage.xml
                 '''
             }
+
             post {
                 always {
-                    junit allowEmptyResults: true, testResults: 'reports/test-results.xml'
+                    junit allowEmptyResults: true,
+                          testResults: 'reports/test-results.xml'
                 }
             }
         }
 
-        // ── Stage 5: SonarQube Analysis ──
+        // 5. SonarQube Analysis
         stage('SonarQube Analysis') {
             steps {
-                echo '📊 Running SonarQube code analysis...'
-                withSonarQubeEnv('SonarQube') {  // Name configured in Jenkins → Manage Jenkins → SonarQube servers
+
+                withSonarQubeEnv('SonarQube') {
+
                     sh '''
                         sonar-scanner \
-                          -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
-                          -Dsonar.projectName="ISL Communication Assistant" \
-                          -Dsonar.projectVersion=${BUILD_NUMBER} \
-                          -Dsonar.sources=. \
-                          -Dsonar.language=py \
-                          -Dsonar.python.coverage.reportPaths=reports/coverage.xml \
-                          -Dsonar.host.url=${SONAR_HOST_URL} \
-                          -Dsonar.login=${SONAR_TOKEN} \
-                          -Dsonar.exclusions=venv/**,__pycache__/**,dataset/**,.venv/**,node_modules/**
+                            -Dsonar.projectKey=isl-communication-assistant \
+                            -Dsonar.projectName="ISL Communication Assistant" \
+                            -Dsonar.projectVersion=${BUILD_NUMBER} \
+                            -Dsonar.sources=. \
+                            -Dsonar.python.coverage.reportPaths=reports/coverage.xml \
+                            -Dsonar.exclusions=venv/**,__pycache__/**,dataset/**,model/**,node_modules/**,.git/**
                     '''
                 }
             }
         }
 
-        // ── Stage 6: SonarQube Quality Gate ──
+        // 6. Quality Gate
         stage('Quality Gate') {
             steps {
-                echo '🚦 Waiting for SonarQube Quality Gate...'
+
                 timeout(time: 5, unit: 'MINUTES') {
+
                     waitForQualityGate abortPipeline: true
+
                 }
             }
         }
 
-        // ── Stage 7: Docker Build ──
+        // 7. Docker Build
         stage('Docker Build') {
             steps {
-                echo '🐳 Building Docker image...'
-                sh """
-                    docker build -t ${DOCKER_IMAGE}:${DOCKER_TAG} .
-                    docker tag ${DOCKER_IMAGE}:${DOCKER_TAG} ${DOCKER_IMAGE}:latest
-                """
+
+                sh '''
+                    docker build \
+                        -t ${DOCKER_IMAGE}:${DOCKER_TAG} .
+
+                '''
             }
         }
 
-        // ── Stage 8: Docker Push to Registry (ECR / DockerHub) ──
-        stage('Docker Push') {
+        // 8. Docker Save and Compress
+        stage('Docker Save') {
+            steps {
+
+                sh '''
+                    docker save ${DOCKER_IMAGE}:${DOCKER_TAG} \
+                        | gzip -1 > isl-app.tar.gz
+
+                    ls -lh isl-app.tar.gz
+                '''
+            }
+        }
+
+        // 9. Transfer Image to EC2
+        stage('Transfer to AWS EC2') {
+
             when {
                 branch 'main'
             }
+
             steps {
-                echo '📤 Pushing Docker image to registry...'
-                script {
-                    if (DOCKER_REGISTRY?.trim()) {
-                        // AWS ECR Login
-                        sh """
-                            aws ecr get-login-password --region ${AWS_REGION} | \
-                            docker login --username AWS --password-stdin ${DOCKER_REGISTRY}
 
-                            docker tag ${DOCKER_IMAGE}:${DOCKER_TAG} ${DOCKER_REGISTRY}/${DOCKER_IMAGE}:${DOCKER_TAG}
-                            docker tag ${DOCKER_IMAGE}:latest ${DOCKER_REGISTRY}/${DOCKER_IMAGE}:latest
+                sshagent(credentials: [SSH_KEY_ID]) {
 
-                            docker push ${DOCKER_REGISTRY}/${DOCKER_IMAGE}:${DOCKER_TAG}
-                            docker push ${DOCKER_REGISTRY}/${DOCKER_IMAGE}:latest
-                        """
-                    } else {
-                        echo '⚠️  DOCKER_REGISTRY not set — skipping push.'
-                    }
+                    sh '''
+                        ssh -o StrictHostKeyChecking=accept-new \
+                            ${EC2_USER}@${EC2_HOST} \
+                            "mkdir -p /home/${EC2_USER}/isl-deployment"
+
+                        scp -o StrictHostKeyChecking=accept-new \
+                            isl-app.tar.gz \
+                            ${EC2_USER}@${EC2_HOST}:/home/${EC2_USER}/isl-deployment/
+                    '''
                 }
             }
         }
 
-        // ── Stage 9: Deploy to AWS EC2 ──
-        stage('Deploy to AWS') {
+        // 10. Deploy Application
+        stage('Deploy to AWS EC2') {
+
             when {
                 branch 'main'
             }
+
             steps {
-                echo '🚀 Deploying to AWS EC2...'
-                script {
-                    if (EC2_HOST?.trim()) {
-                        sshagent(credentials: [SSH_KEY_ID]) {
-                            sh """
-                                ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} << 'ENDSSH'
-                                    # Pull latest image
-                                    docker pull ${DOCKER_REGISTRY}/${DOCKER_IMAGE}:latest || true
 
-                                    # Stop existing container
-                                    docker stop isl-app || true
-                                    docker rm isl-app || true
+                sshagent(credentials: [SSH_KEY_ID]) {
 
-                                    # Run new container
-                                    docker run -d \\
-                                        --name isl-app \\
-                                        --restart unless-stopped \\
-                                        -p 5000:5000 \\
-                                        ${DOCKER_REGISTRY}/${DOCKER_IMAGE}:latest
+                    sh '''
+                        ssh -o StrictHostKeyChecking=accept-new \
+                            ${EC2_USER}@${EC2_HOST} \
+                            "IMAGE='${DOCKER_IMAGE}:${DOCKER_TAG}' bash -s" <<'REMOTE'
 
-                                    # Cleanup old images
-                                    docker image prune -f
-ENDSSH
-                            """
-                        }
-                    } else {
-                        echo '⚠️  EC2_HOST not set — skipping deployment.'
-                    }
+                        set -e
+
+                        cd /home/ubuntu/isl-deployment
+
+                        echo "Loading Docker image..."
+
+                        gunzip -c isl-app.tar.gz | docker load
+
+                        echo "Stopping previous container..."
+
+                        docker rm -f isl-app || true
+
+                        echo "Starting new container..."
+
+                        docker run -d \
+                            --name isl-app \
+                            --restart unless-stopped \
+                            -p 5000:5000 \
+                            "$IMAGE"
+
+                        echo "Waiting for application health..."
+
+                        sleep 60
+
+                        STATUS=$(docker inspect \
+                            --format='{{.State.Health.Status}}' isl-app)
+
+                        if [ "$STATUS" != "healthy" ]; then
+
+                            echo "Deployment health check failed!"
+
+                            docker logs isl-app
+
+                            exit 1
+
+                        fi
+
+                        echo "Application deployed successfully!"
+
+                        docker image prune -f
+
+                        rm -f isl-app.tar.gz
+
+REMOTE
+                    '''
                 }
             }
         }
     }
 
     post {
+
         success {
-            echo '✅ Pipeline completed successfully!'
+            echo 'ISL Application CI/CD Pipeline completed successfully!'
         }
+
         failure {
-            echo '❌ Pipeline failed! Check the logs above.'
+            echo 'Pipeline failed. Check Jenkins console output.'
         }
+
         always {
-            echo '🧹 Cleaning up workspace...'
             cleanWs()
         }
     }
