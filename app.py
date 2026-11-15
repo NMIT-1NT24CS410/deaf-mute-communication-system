@@ -368,14 +368,43 @@ def perform_prediction(image_data):
         print(f"Prediction logic error: {e}")
         return {"prediction": "?", "confidence": 0.0, "error": str(e)}
 
+
 @app.route('/predict', methods=['POST'])
 def predict_gesture():
-    data = request.json
-    image_data = data.get('image')
-    if not image_data:
-        return jsonify({"prediction": "?", "confidence": 0.0, "error": "No image data"})
-    res = perform_prediction(image_data)
-    return jsonify(res)
+    global current_prediction, confidence_score
+
+    try:
+        data = request.get_json(silent=True) or {}
+        image_data = data.get('image')
+
+        if not image_data:
+            return jsonify({
+                "prediction": "?",
+                "confidence": 0.0,
+                "error": "No image data received"
+            }), 400
+
+        # Process the webcam frame received from the browser
+        res = perform_prediction(image_data)
+
+        # Update global state for the Module 1 interface
+        current_prediction = res.get("prediction", "?")
+        confidence_score = float(res.get("confidence", 0.0))
+
+        return jsonify(res)
+
+    except Exception as e:
+        app.logger.exception("Webcam prediction failed")
+
+        current_prediction = "?"
+        confidence_score = 0.0
+
+        return jsonify({
+            "prediction": "?",
+            "confidence": 0.0,
+            "error": str(e)
+        }), 500
+
 
 @socketio.on('predict-frame')
 def handle_predict_frame(data):
