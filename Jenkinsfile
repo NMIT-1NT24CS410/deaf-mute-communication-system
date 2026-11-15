@@ -10,6 +10,7 @@ pipeline {
         SONAR_SCANNER_IMAGE = 'sonarsource/sonar-scanner-cli:latest'
 
         APP_CONTAINER = 'isl-app'
+        APP_PORT = '5000'
     }
 
     options {
@@ -21,19 +22,17 @@ pipeline {
 
     stages {
 
-        // 1. Checkout
         stage('Checkout') {
             steps {
-                echo 'Checking out GitHub repository...'
                 checkout scm
+                sh 'echo "Source code checked out successfully"'
             }
         }
 
-        // 2. Python dependencies, lint and tests
         stage('Python CI - Lint and Tests') {
             steps {
                 sh '''
-                    set -e
+                    set -eu
 
                     mkdir -p reports
 
@@ -43,9 +42,8 @@ pipeline {
                         -w /workspace \
                         python:3.10-slim \
                         sh -ec '
-                            apt-get update -qq
-
-                            apt-get install -y -qq --no-install-recommends \
+                            apt-get update
+                            apt-get install -y --no-install-recommends \
                                 libgl1 \
                                 libglib2.0-0 \
                                 libsm6 \
@@ -53,23 +51,13 @@ pipeline {
                                 libxrender1 \
                                 libgomp1
 
-                            rm -rf /var/lib/apt/lists/*
+                            pip install --no-cache-dir -r requirements.txt
+                            pip install --no-cache-dir pytest-cov flake8
 
-                            pip install --no-cache-dir \
-                                -r requirements.txt \
-                                pytest pytest-cov flake8
+                            echo "===== PYTHON LINT ====="
+                            flake8 app.py --max-line-length=120 --statistics --count
 
-                            echo "========== FLAKE8 LINT =========="
-
-                            flake8 app.py \
-                                --max-line-length=120 \
-                                --statistics \
-                                --count
-
-                            echo "========== PYTEST =========="
-
-                            mkdir -p reports
-
+                            echo "===== PYTHON TESTS ====="
                             PYTHONPATH=/workspace python -m pytest tests/ \
                                 --tb=short \
                                 --junitxml=reports/test-results.xml \
@@ -78,7 +66,6 @@ pipeline {
                         '
                 '''
             }
-
             post {
                 always {
                     junit allowEmptyResults: true,
@@ -90,11 +77,12 @@ pipeline {
             }
         }
 
-        // 3. SonarQube Analysis
         stage('SonarQube Analysis') {
             steps {
                 withSonarQubeEnv('SonarQube') {
                     sh '''
+                        set -eu
+
                         docker run --rm \
                             --network host \
                             -e SONAR_HOST_URL="$SONAR_HOST_URL" \
@@ -105,18 +93,17 @@ pipeline {
                             -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
                             -Dsonar.projectName="ISL Communication Assistant" \
                             -Dsonar.projectVersion="$BUILD_NUMBER" \
-                            -Dsonar.sources=app.py,main_app.py,step1_collect_dataset.py,step2_extract_landmarks.py,step3_train_model.py,step4_sign_to_speech.py,step5_text_to_sign.py \
+                            -Dsonar.sources=app.py \
                             -Dsonar.tests=tests \
-                            -Dsonar.test.inclusions=tests/**/*.py \
+                            -Dsonar.test.inclusions="tests/**/*.py" \
                             -Dsonar.python.coverage.reportPaths=reports/coverage.xml \
-                            -Dsonar.exclusions=dataset/**,model/**,isl_signs/**,.git/**,reports/**,**/__pycache__/**,*.csv
+                            -Dsonar.exclusions="dataset/**,model/**,isl_signs/**,reports/**,*.csv,**/__pycache__/**"
                     '''
                 }
             }
         }
 
-        // 4. Quality Gate
-        stage('Quality Gate') {
+        stage('SonarQube Quality Gate') {
             steps {
                 timeout(time: 5, unit: 'MINUTES') {
                     waitForQualityGate abortPipeline: true
@@ -124,49 +111,63 @@ pipeline {
             }
         }
 
-        // 5. Build Docker Image
         stage('Docker Build') {
             steps {
                 sh '''
+                    set -eu
+
+                    echo "===== BUILDING DOCKER IMAGE ====="
+
                     docker build \
-                        -t ${DOCKER_IMAGE}:${DOCKER_TAG} \
-                        -t ${DOCKER_IMAGE}:latest .
+                        -t "$DOCKER_IMAGE:$DOCKER_TAG" \
+                        -t "$DOCKER_IMAGE:latest" \
+                        .
                 '''
             }
         }
 
-        // 6. Deploy locally on the same EC2
         stage('Deploy to EC2') {
             steps {
                 sh '''
-                    set -e
+                    set -eu
 
-                    echo "========== DEPLOYMENT =========="
+                    echo "===== DEPLOYING APPLICATION ====="
 
-                    PREVIOUS_IMAGE=$(docker inspect \
+                    NEW_IMAGE="$DOCKER_IMAGE:$DOCKER_TAG"
+
+                    OLD_IMAGE=$(docker inspect \
                         --format='{{.Config.Image}}' \
-                        ${APP_CONTAINER} 2>/dev/null || true)
+                        "$APP_CONTAINER" 2>/dev/null || true)
 
-                    echo "Previous image: ${PREVIOUS_IMAGE:-None}"
+                    docker rm -f "$APP_CONTAINER" 2>/dev/null || true
 
-                    docker rm -f ${APP_CONTAINER} || true
-
-                    echo "Starting new application container..."
-
-                    docker run -d \
-                        --name ${APP_CONTAINER} \
+                    if ! docker run -d \
+                        --name "$APP_CONTAINER" \
                         --restart unless-stopped \
-                        -p 5000:5000 \
-                        ${DOCKER_IMAGE}:${DOCKER_TAG}
+                        -p "$APP_PORT:5000" \
+                        "$NEW_IMAGE"; then
 
-                    echo "Checking application health..."
+                        echo "New deployment failed."
+
+                        if [ -n "$OLD_IMAGE" ]; then
+                            docker run -d \
+                                --name "$APP_CONTAINER" \
+                                --restart unless-stopped \
+                                -p "$APP_PORT:5000" \
+                                "$OLD_IMAGE" || true
+                        fi
+
+                        exit 1
+                    fi
+
+                    echo "===== CHECKING APPLICATION HEALTH ====="
 
                     HEALTHY=false
 
                     for i in $(seq 1 36); do
                         STATUS=$(docker inspect \
-                            --format='{{.State.Health.Status}}' \
-                            ${APP_CONTAINER} 2>/dev/null || echo "missing")
+                            --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
+                            "$APP_CONTAINER" 2>/dev/null || echo "missing")
 
                         echo "Health check $i/36: $STATUS"
 
@@ -175,7 +176,7 @@ pipeline {
                             break
                         fi
 
-                        if [ "$STATUS" = "unhealthy" ] || [ "$STATUS" = "missing" ]; then
+                        if [ "$STATUS" = "exited" ] || [ "$STATUS" = "missing" ]; then
                             break
                         fi
 
@@ -183,31 +184,25 @@ pipeline {
                     done
 
                     if [ "$HEALTHY" != "true" ]; then
-                        echo "Deployment failed!"
-                        docker logs ${APP_CONTAINER} || true
+                        echo "Deployment health check failed."
 
-                        docker rm -f ${APP_CONTAINER} || true
+                        docker rm -f "$APP_CONTAINER" 2>/dev/null || true
 
-                        if [ -n "$PREVIOUS_IMAGE" ] && \
-                           docker image inspect "$PREVIOUS_IMAGE" >/dev/null 2>&1; then
-
-                            echo "Rolling back to previous image..."
+                        if [ -n "$OLD_IMAGE" ]; then
+                            echo "Rolling back to previous image."
 
                             docker run -d \
-                                --name ${APP_CONTAINER} \
+                                --name "$APP_CONTAINER" \
                                 --restart unless-stopped \
-                                -p 5000:5000 \
-                                "$PREVIOUS_IMAGE"
+                                -p "$APP_PORT:5000" \
+                                "$OLD_IMAGE" || true
                         fi
 
                         exit 1
                     fi
 
-                    echo "Application is healthy!"
-
-                    docker ps --filter name=${APP_CONTAINER}
-
-                    echo "Deployment completed successfully!"
+                    echo "===== DEPLOYMENT SUCCESSFUL ====="
+                    docker ps --filter "name=$APP_CONTAINER"
                 '''
             }
         }
@@ -215,11 +210,11 @@ pipeline {
 
     post {
         success {
-            echo 'ISL Communication Assistant CI/CD completed successfully!'
+            echo 'ISL CI/CD pipeline completed successfully!'
         }
 
         failure {
-            echo 'Pipeline failed. Check Jenkins Console Output.'
+            echo 'ISL CI/CD pipeline failed. Check the failed stage logs.'
         }
 
         always {
