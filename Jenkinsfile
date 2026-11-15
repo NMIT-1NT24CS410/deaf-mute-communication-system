@@ -1,27 +1,20 @@
-pipeline {
 
+pipeline {
     agent any
 
     environment {
-
-        // Docker Configuration
         DOCKER_IMAGE = 'isl-communication-assistant'
         DOCKER_TAG = "${BUILD_NUMBER}"
 
-        // SonarQube Configuration
         SONAR_PROJECT_KEY = 'isl-communication-assistant'
+        SONAR_SCANNER_IMAGE = 'sonarsource/sonar-scanner-cli:latest'
 
-        // AWS EC2 Configuration
-        EC2_HOST = 'YOUR_EC2_PUBLIC_IP'
-        EC2_USER = 'ubuntu'
-
-        // Jenkins SSH Credential ID
-        SSH_KEY_ID = 'aws-ec2-ssh-key'
+        APP_CONTAINER = 'isl-app'
     }
 
     options {
         timestamps()
-        timeout(time: 60, unit: 'MINUTES')
+        timeout(time: 90, unit: 'MINUTES')
         disableConcurrentBuilds()
         buildDiscarder(logRotator(numToKeepStr: '10'))
     }
@@ -36,49 +29,53 @@ pipeline {
             }
         }
 
-        // 2. Install Dependencies
-        stage('Install Dependencies') {
+        // 2. Python dependencies, lint and tests
+        stage('Python CI - Lint and Tests') {
             steps {
                 sh '''
-                    python3 -m venv venv
-                    . venv/bin/activate
+                    set -e
 
-                    pip install --upgrade pip
-                    pip install -r requirements.txt
-
-                    pip install pylint pytest pytest-cov flake8
-                '''
-            }
-        }
-
-        // 3. Lint
-        stage('Code Quality - Lint') {
-            steps {
-                sh '''
-                    . venv/bin/activate
-
-                    flake8 app.py \
-                        --max-line-length=120 \
-                        --statistics \
-                        --count
-                '''
-            }
-        }
-
-        // 4. Unit Testing
-        stage('Unit Testing') {
-
-            steps {
-                sh '''
                     mkdir -p reports
 
-                    . venv/bin/activate
+                    docker run --rm \
+                        --network host \
+                        -v "$WORKSPACE:/workspace" \
+                        -w /workspace \
+                        python:3.10-slim \
+                        sh -ec '
+                            apt-get update -qq
 
-                    pytest tests/ \
-                        --tb=short \
-                        --junitxml=reports/test-results.xml \
-                        --cov=. \
-                        --cov-report=xml:reports/coverage.xml
+                            apt-get install -y -qq --no-install-recommends \
+                                libgl1 \
+                                libglib2.0-0 \
+                                libsm6 \
+                                libxext6 \
+                                libxrender1 \
+                                libgomp1
+
+                            rm -rf /var/lib/apt/lists/*
+
+                            pip install --no-cache-dir \
+                                -r requirements.txt \
+                                pytest pytest-cov flake8
+
+                            echo "========== FLAKE8 LINT =========="
+
+                            flake8 app.py \
+                                --max-line-length=120 \
+                                --statistics \
+                                --count
+
+                            echo "========== PYTEST =========="
+
+                            mkdir -p reports
+
+                            PYTHONPATH=/workspace python -m pytest tests/ \
+                                --tb=short \
+                                --junitxml=reports/test-results.xml \
+                                --cov=app \
+                                --cov-report=xml:reports/coverage.xml
+                        '
                 '''
             }
 
@@ -86,164 +83,143 @@ pipeline {
                 always {
                     junit allowEmptyResults: true,
                           testResults: 'reports/test-results.xml'
+
+                    archiveArtifacts artifacts: 'reports/*.xml',
+                                     allowEmptyArchive: true
                 }
             }
         }
 
-        // 5. SonarQube Analysis
+        // 3. SonarQube Analysis
         stage('SonarQube Analysis') {
             steps {
-
                 withSonarQubeEnv('SonarQube') {
-
                     sh '''
-                        sonar-scanner \
-                            -Dsonar.projectKey=isl-communication-assistant \
+                        docker run --rm \
+                            --network host \
+                            -e SONAR_HOST_URL="$SONAR_HOST_URL" \
+                            -e SONAR_TOKEN="$SONAR_AUTH_TOKEN" \
+                            -v "$WORKSPACE:/usr/src" \
+                            -w /usr/src \
+                            "$SONAR_SCANNER_IMAGE" \
+                            -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
                             -Dsonar.projectName="ISL Communication Assistant" \
-                            -Dsonar.projectVersion=${BUILD_NUMBER} \
-                            -Dsonar.sources=. \
+                            -Dsonar.projectVersion="$BUILD_NUMBER" \
+                            -Dsonar.sources=app.py,main_app.py,step1_collect_dataset.py,step2_extract_landmarks.py,step3_train_model.py,step4_sign_to_speech.py,step5_text_to_sign.py \
+                            -Dsonar.tests=tests \
+                            -Dsonar.test.inclusions=tests/**/*.py \
                             -Dsonar.python.coverage.reportPaths=reports/coverage.xml \
-                            -Dsonar.exclusions=venv/**,__pycache__/**,dataset/**,model/**,node_modules/**,.git/**
+                            -Dsonar.exclusions=dataset/**,model/**,isl_signs/**,.git/**,reports/**,**/__pycache__/**,*.csv
                     '''
                 }
             }
         }
 
-        // 6. Quality Gate
+        // 4. Quality Gate
         stage('Quality Gate') {
             steps {
-
                 timeout(time: 5, unit: 'MINUTES') {
-
                     waitForQualityGate abortPipeline: true
-
                 }
             }
         }
 
-        // 7. Docker Build
+        // 5. Build Docker Image
         stage('Docker Build') {
             steps {
-
                 sh '''
                     docker build \
-                        -t ${DOCKER_IMAGE}:${DOCKER_TAG} .
-
+                        -t ${DOCKER_IMAGE}:${DOCKER_TAG} \
+                        -t ${DOCKER_IMAGE}:latest .
                 '''
             }
         }
 
-        // 8. Docker Save and Compress
-        stage('Docker Save') {
+        // 6. Deploy locally on the same EC2
+        stage('Deploy to EC2') {
             steps {
-
                 sh '''
-                    docker save ${DOCKER_IMAGE}:${DOCKER_TAG} \
-                        | gzip -1 > isl-app.tar.gz
+                    set -e
 
-                    ls -lh isl-app.tar.gz
-                '''
-            }
-        }
+                    echo "========== DEPLOYMENT =========="
 
-        // 9. Transfer Image to EC2
-        stage('Transfer to AWS EC2') {
+                    PREVIOUS_IMAGE=$(docker inspect \
+                        --format='{{.Config.Image}}' \
+                        ${APP_CONTAINER} 2>/dev/null || true)
 
-            when {
-                branch 'main'
-            }
+                    echo "Previous image: ${PREVIOUS_IMAGE:-None}"
 
-            steps {
+                    docker rm -f ${APP_CONTAINER} || true
 
-                sshagent(credentials: [SSH_KEY_ID]) {
+                    echo "Starting new application container..."
 
-                    sh '''
-                        ssh -o StrictHostKeyChecking=accept-new \
-                            ${EC2_USER}@${EC2_HOST} \
-                            "mkdir -p /home/${EC2_USER}/isl-deployment"
+                    docker run -d \
+                        --name ${APP_CONTAINER} \
+                        --restart unless-stopped \
+                        -p 5000:5000 \
+                        ${DOCKER_IMAGE}:${DOCKER_TAG}
 
-                        scp -o StrictHostKeyChecking=accept-new \
-                            isl-app.tar.gz \
-                            ${EC2_USER}@${EC2_HOST}:/home/${EC2_USER}/isl-deployment/
-                    '''
-                }
-            }
-        }
+                    echo "Checking application health..."
 
-        // 10. Deploy Application
-        stage('Deploy to AWS EC2') {
+                    HEALTHY=false
 
-            when {
-                branch 'main'
-            }
-
-            steps {
-
-                sshagent(credentials: [SSH_KEY_ID]) {
-
-                    sh '''
-                        ssh -o StrictHostKeyChecking=accept-new \
-                            ${EC2_USER}@${EC2_HOST} \
-                            "IMAGE='${DOCKER_IMAGE}:${DOCKER_TAG}' bash -s" <<'REMOTE'
-
-                        set -e
-
-                        cd /home/ubuntu/isl-deployment
-
-                        echo "Loading Docker image..."
-
-                        gunzip -c isl-app.tar.gz | docker load
-
-                        echo "Stopping previous container..."
-
-                        docker rm -f isl-app || true
-
-                        echo "Starting new container..."
-
-                        docker run -d \
-                            --name isl-app \
-                            --restart unless-stopped \
-                            -p 5000:5000 \
-                            "$IMAGE"
-
-                        echo "Waiting for application health..."
-
-                        sleep 60
-
+                    for i in $(seq 1 36); do
                         STATUS=$(docker inspect \
-                            --format='{{.State.Health.Status}}' isl-app)
+                            --format='{{.State.Health.Status}}' \
+                            ${APP_CONTAINER} 2>/dev/null || echo "missing")
 
-                        if [ "$STATUS" != "healthy" ]; then
+                        echo "Health check $i/36: $STATUS"
 
-                            echo "Deployment health check failed!"
-
-                            docker logs isl-app
-
-                            exit 1
-
+                        if [ "$STATUS" = "healthy" ]; then
+                            HEALTHY=true
+                            break
                         fi
 
-                        echo "Application deployed successfully!"
+                        if [ "$STATUS" = "unhealthy" ] || [ "$STATUS" = "missing" ]; then
+                            break
+                        fi
 
-                        docker image prune -f
+                        sleep 5
+                    done
 
-                        rm -f isl-app.tar.gz
+                    if [ "$HEALTHY" != "true" ]; then
+                        echo "Deployment failed!"
+                        docker logs ${APP_CONTAINER} || true
 
-REMOTE
-                    '''
-                }
+                        docker rm -f ${APP_CONTAINER} || true
+
+                        if [ -n "$PREVIOUS_IMAGE" ] && \
+                           docker image inspect "$PREVIOUS_IMAGE" >/dev/null 2>&1; then
+
+                            echo "Rolling back to previous image..."
+
+                            docker run -d \
+                                --name ${APP_CONTAINER} \
+                                --restart unless-stopped \
+                                -p 5000:5000 \
+                                "$PREVIOUS_IMAGE"
+                        fi
+
+                        exit 1
+                    fi
+
+                    echo "Application is healthy!"
+
+                    docker ps --filter name=${APP_CONTAINER}
+
+                    echo "Deployment completed successfully!"
+                '''
             }
         }
     }
 
     post {
-
         success {
-            echo 'ISL Application CI/CD Pipeline completed successfully!'
+            echo 'ISL Communication Assistant CI/CD completed successfully!'
         }
 
         failure {
-            echo 'Pipeline failed. Check Jenkins console output.'
+            echo 'Pipeline failed. Check Jenkins Console Output.'
         }
 
         always {
