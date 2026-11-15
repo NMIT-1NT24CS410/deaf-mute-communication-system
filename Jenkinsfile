@@ -3,12 +3,15 @@ pipeline {
     agent any
 
     environment {
+        // Docker configuration
         DOCKER_IMAGE = 'isl-communication-assistant'
         DOCKER_TAG = "${BUILD_NUMBER}"
 
+        // SonarQube configuration
         SONAR_PROJECT_KEY = 'isl-communication-assistant'
         SONAR_SCANNER_IMAGE = 'sonarsource/sonar-scanner-cli:latest'
 
+        // Application configuration
         APP_CONTAINER = 'isl-app'
         APP_PORT = '5000'
     }
@@ -22,12 +25,20 @@ pipeline {
 
     stages {
 
+        // ==========================================
+        // 1. CHECKOUT
+        // ==========================================
+
         stage('Checkout') {
             steps {
                 checkout scm
                 sh 'echo "Source code checked out successfully"'
             }
         }
+
+        // ==========================================
+        // 2. PYTHON LINT AND TESTS
+        // ==========================================
 
         stage('Python CI - Lint and Tests') {
             steps {
@@ -43,6 +54,7 @@ pipeline {
                         python:3.10-slim \
                         sh -ec '
                             apt-get update
+
                             apt-get install -y --no-install-recommends \
                                 libgl1 \
                                 libglib2.0-0 \
@@ -55,10 +67,15 @@ pipeline {
                             pip install --no-cache-dir pytest-cov flake8
 
                             echo "===== PYTHON LINT ====="
-                            flake8 app.py --max-line-length=120 --statistics --count \
-    --extend-ignore=E302,E305,E261,E501,W293,F401,F824
+
+                            flake8 app.py \
+                                --max-line-length=120 \
+                                --statistics \
+                                --count \
+                                --extend-ignore=E302,E305,E261,E501,W293,F401,F824
 
                             echo "===== PYTHON TESTS ====="
+
                             PYTHONPATH=/workspace python -m pytest tests/ \
                                 --tb=short \
                                 --junitxml=reports/test-results.xml \
@@ -67,6 +84,7 @@ pipeline {
                         '
                 '''
             }
+
             post {
                 always {
                     junit allowEmptyResults: true,
@@ -78,11 +96,17 @@ pipeline {
             }
         }
 
+        // ==========================================
+        // 3. SONARQUBE ANALYSIS
+        // ==========================================
+
         stage('SonarQube Analysis') {
             steps {
                 withSonarQubeEnv('SonarQube') {
                     sh '''
                         set -eu
+
+                        echo "===== SONARQUBE ANALYSIS ====="
 
                         docker run --rm \
                             --user "$(id -u):$(id -g)" \
@@ -95,6 +119,7 @@ pipeline {
                             -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
                             -Dsonar.projectName="ISL Communication Assistant" \
                             -Dsonar.projectVersion="$BUILD_NUMBER" \
+                            -Dsonar.working.directory=/usr/src/.scannerwork \
                             -Dsonar.sources=app.py \
                             -Dsonar.tests=tests \
                             -Dsonar.test.inclusions="tests/**/*.py" \
@@ -105,13 +130,21 @@ pipeline {
             }
         }
 
+        // ==========================================
+        // 4. SONARQUBE QUALITY GATE
+        // ==========================================
+
         stage('SonarQube Quality Gate') {
             steps {
-                timeout(time: 5, unit: 'MINUTES') {
+                timeout(time: 10, unit: 'MINUTES') {
                     waitForQualityGate abortPipeline: true
                 }
             }
         }
+
+        // ==========================================
+        // 5. DOCKER BUILD
+        // ==========================================
 
         stage('Docker Build') {
             steps {
@@ -124,9 +157,15 @@ pipeline {
                         -t "$DOCKER_IMAGE:$DOCKER_TAG" \
                         -t "$DOCKER_IMAGE:latest" \
                         .
+
+                    echo "===== DOCKER BUILD SUCCESSFUL ====="
                 '''
             }
         }
+
+        // ==========================================
+        // 6. DEPLOY TO EC2
+        // ==========================================
 
         stage('Deploy to EC2') {
             steps {
@@ -152,6 +191,8 @@ pipeline {
                         echo "New deployment failed."
 
                         if [ -n "$OLD_IMAGE" ]; then
+                            echo "Restoring previous image."
+
                             docker run -d \
                                 --name "$APP_CONTAINER" \
                                 --restart unless-stopped \
@@ -167,6 +208,7 @@ pipeline {
                     HEALTHY=false
 
                     for i in $(seq 1 36); do
+
                         STATUS=$(docker inspect \
                             --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
                             "$APP_CONTAINER" 2>/dev/null || echo "missing")
@@ -186,6 +228,7 @@ pipeline {
                     done
 
                     if [ "$HEALTHY" != "true" ]; then
+
                         echo "Deployment health check failed."
 
                         docker rm -f "$APP_CONTAINER" 2>/dev/null || true
@@ -204,11 +247,16 @@ pipeline {
                     fi
 
                     echo "===== DEPLOYMENT SUCCESSFUL ====="
+
                     docker ps --filter "name=$APP_CONTAINER"
                 '''
             }
         }
     }
+
+    // ==========================================
+    // POST BUILD ACTIONS
+    // ==========================================
 
     post {
         success {
