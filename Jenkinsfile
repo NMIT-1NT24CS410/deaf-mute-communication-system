@@ -89,12 +89,13 @@ pipeline {
                             -e SONAR_HOST_URL="$SONAR_HOST_URL" \
                             -e SONAR_TOKEN="$SONAR_AUTH_TOKEN" \
                             -v "$WORKSPACE:/usr/src" \
+                            -v "$WORKSPACE/.scannerwork:/tmp/sonar-work" \
                             -w /usr/src \
                             "$SONAR_SCANNER_IMAGE" \
                             -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
                             -Dsonar.projectName="ISL Communication Assistant" \
                             -Dsonar.projectVersion="$BUILD_NUMBER" \
-                            -Dsonar.working.directory=/usr/src/.scannerwork \
+                            -Dsonar.working.directory=/tmp/sonar-work \
                             -Dsonar.sources=app.py \
                             -Dsonar.tests=tests \
                             -Dsonar.test.inclusions="tests/**/*.py" \
