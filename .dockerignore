@@ -39,3 +39,5 @@ reports/
 
 # Local development data
 landmarks.csv
+# Dataset is mounted separately from EC2 storage
+dataset/
