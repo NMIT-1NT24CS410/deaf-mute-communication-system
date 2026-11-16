@@ -140,7 +140,6 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- Navigation ---
     const navLinks = document.querySelectorAll('.nav-links li');
     const sections = document.querySelectorAll('.module-section');
-    const videoStream = document.getElementById('video-stream');
 
     navLinks.forEach(link => {
         link.addEventListener('click', () => {
@@ -153,13 +152,11 @@ document.addEventListener('DOMContentLoaded', () => {
             sections.forEach(sec => sec.classList.remove('active'));
             document.getElementById(targetId).classList.add('active');
 
-            // Handle Video Stream
+            // Handle Module 1 camera
             if (targetId === 'module1') {
-                videoStream.src = '/video_feed';
-                startPollingState();
+                startModule1Camera();
             } else {
-                videoStream.src = ''; // Stop streaming to save resources
-                stopPollingState();
+                stopModule1Camera();
             }
 
             // Leave call if navigating away from Video Call
@@ -171,76 +168,189 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
-    // --- Module 1: Sign to Speech ---
-    let pollingInterval = null;
+    // --- Module 1: Sign to Speech (Browser Camera) ---
+    let m1Stream = null;
+    let m1PredictTimer = null;
+    let m1IsProcessing = false;
+    let m1CurrentWord = "";
+    let m1LastPrediction = "?";
+    let m1StableFrames = 0;
+    let m1NoHandsFrames = 0;
+    const m1Video = document.getElementById('module1-video');
     const currentPredEl = document.getElementById('current-pred');
     const predConfEl = document.getElementById('pred-conf');
     const currentWordEl = document.getElementById('current-word');
 
-    function startPollingState() {
-        if (!pollingInterval) {
-            pollingInterval = setInterval(fetchState, 500);
-        }
-    }
-
-    function stopPollingState() {
-        if (pollingInterval) {
-            clearInterval(pollingInterval);
-            pollingInterval = null;
-        }
-    }
-
-    async function fetchState() {
+    async function startModule1Camera() {
+        if (m1Stream) return; // Already running
         try {
-            const res = await fetch('/state');
-            const data = await res.json();
-            
-            const selectedLang = document.getElementById('lang-select').value;
-            const { wordTrans, predTrans } = await getTranslatedState(data.current_word, data.current_prediction);
-            
-            if (selectedLang === 'kn' && data.current_prediction !== "?") {
-                currentPredEl.textContent = `${data.current_prediction} (${predTrans})`;
-            } else {
-                currentPredEl.textContent = data.current_prediction;
-            }
-            
-            predConfEl.textContent = Math.round(data.confidence * 100);
-            currentWordEl.textContent = wordTrans;
+            m1Stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+            m1Video.srcObject = m1Stream;
+            startModule1Prediction();
         } catch (e) {
-            console.error('Error fetching state:', e);
+            console.error('[Module1] Camera access failed:', e);
+            alert('Failed to access camera. Ensure you are using HTTPS and have granted camera permission.');
+        }
+    }
+
+    function stopModule1Camera() {
+        if (m1PredictTimer) {
+            clearInterval(m1PredictTimer);
+            m1PredictTimer = null;
+        }
+        if (m1Stream) {
+            m1Stream.getTracks().forEach(track => track.stop());
+            m1Stream = null;
+        }
+        if (m1Video) m1Video.srcObject = null;
+        m1IsProcessing = false;
+    }
+
+    function startModule1Prediction() {
+        if (m1PredictTimer) clearInterval(m1PredictTimer);
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+
+        m1PredictTimer = setInterval(async () => {
+            if (m1IsProcessing) return;
+            if (!m1Stream || !m1Video || m1Video.videoWidth === 0) return;
+
+            m1IsProcessing = true;
+
+            // Capture frame from browser camera
+            const maxDim = 320;
+            let w = m1Video.videoWidth;
+            let h = m1Video.videoHeight;
+            if (w > maxDim) {
+                h = Math.round(h * (maxDim / w));
+                w = maxDim;
+            }
+            canvas.width = w;
+            canvas.height = h;
+            ctx.drawImage(m1Video, 0, 0, w, h);
+            const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+
+            try {
+                // Send frame to server for prediction
+                const res = await fetch('/predict', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ image: dataUrl })
+                });
+                const data = await res.json();
+                handleModule1Prediction(data);
+            } catch (e) {
+                console.error('[Module1] Prediction error:', e);
+            } finally {
+                m1IsProcessing = false;
+            }
+        }, 200);
+    }
+
+    async function handleModule1Prediction(data) {
+        if (!data) return;
+        const pred = data.prediction || "?";
+        const conf = Math.round((data.confidence || 0) * 100);
+
+        const selectedLang = document.getElementById('lang-select').value;
+        const { wordTrans, predTrans } = await getTranslatedState(m1CurrentWord, pred);
+
+        if (selectedLang === 'kn' && pred !== "?") {
+            currentPredEl.textContent = `${pred} (${predTrans})`;
+        } else {
+            currentPredEl.textContent = pred;
+        }
+        predConfEl.textContent = conf;
+        currentWordEl.textContent = wordTrans;
+
+        // Auto-form word logic (stabilization)
+        if (pred !== "?") {
+            m1NoHandsFrames = 0;
+            if (pred === m1LastPrediction) {
+                m1StableFrames++;
+                if (m1StableFrames === 5) {
+                    if (pred.length > 1) {
+                        if (m1CurrentWord && !m1CurrentWord.endsWith(" ")) {
+                            m1CurrentWord += " ";
+                        }
+                        m1CurrentWord += pred + " ";
+                    } else {
+                        m1CurrentWord += pred;
+                    }
+                    m1StableFrames = 0;
+                }
+            } else {
+                m1StableFrames = 0;
+            }
+            m1LastPrediction = pred;
+        } else {
+            m1StableFrames = 0;
+            m1LastPrediction = "?";
+            m1NoHandsFrames++;
+            if (m1NoHandsFrames === 15) {
+                if (m1CurrentWord.length > 0 && !m1CurrentWord.endsWith(" ")) {
+                    m1CurrentWord += " ";
+                }
+            }
         }
     }
 
     async function sendAction(action) {
-        try {
-            const res = await fetch('/action', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action })
-            });
-            const data = await res.json();
-            if (action === 'speak' && data.word) {
-                const selectedLang = document.getElementById('lang-select').value;
-                if (selectedLang === 'kn') {
-                    const translatedWord = await translateText(data.word, 'kn');
-                    speakText(translatedWord, 'kn-IN');
+        if (action === 'add') {
+            const pred = currentPredEl.textContent.split(' (')[0]; // Get English prediction only
+            if (pred && pred !== "?") {
+                if (pred.length > 1) {
+                    if (m1CurrentWord && !m1CurrentWord.endsWith(" ")) {
+                        m1CurrentWord += " ";
+                    }
+                    m1CurrentWord += pred + " ";
                 } else {
-                    speakText(data.word, 'en-US');
+                    m1CurrentWord += pred;
                 }
             }
-            fetchState(); // Immediate update
-        } catch (e) {
-            console.error('Action error:', e);
+        } else if (action === 'backspace') {
+            if (m1CurrentWord.length > 0) {
+                m1CurrentWord = m1CurrentWord.slice(0, -1);
+            }
+        } else if (action === 'clear') {
+            m1CurrentWord = "";
+        } else if (action === 'speak') {
+            const wordToSpeak = m1CurrentWord.trim();
+            m1CurrentWord = "";
+            if (wordToSpeak) {
+                const selectedLang = document.getElementById('lang-select').value;
+                if (selectedLang === 'kn') {
+                    const translatedWord = await translateText(wordToSpeak, 'kn');
+                    speakText(translatedWord, 'kn-IN');
+                } else {
+                    speakText(wordToSpeak, 'en-US');
+                }
+            }
+        }
+        // Update display
+        const selectedLang = document.getElementById('lang-select').value;
+        if (selectedLang === 'kn' && m1CurrentWord.trim()) {
+            const translated = await translateText(m1CurrentWord, 'kn');
+            currentWordEl.textContent = translated;
+        } else {
+            currentWordEl.textContent = m1CurrentWord;
         }
     }
 
     // Dynamic state clearing on language change
-    document.getElementById('lang-select').addEventListener('change', () => {
+    document.getElementById('lang-select').addEventListener('change', async () => {
         lastEnglishWord = "";
         cachedKannadaWord = "";
         lastEnglishPred = "";
         cachedKannadaPred = "";
-        fetchState();
+        // Update display with new language
+        const selectedLang = document.getElementById('lang-select').value;
+        if (selectedLang === 'kn' && m1CurrentWord.trim()) {
+            const translated = await translateText(m1CurrentWord, 'kn');
+            currentWordEl.textContent = translated;
+        } else {
+            currentWordEl.textContent = m1CurrentWord;
+        }
     });
 
     // Module 1 Buttons
@@ -1255,9 +1365,8 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // Initialize stream on load if module1 is active
+    // Initialize Module 1 camera on load if module1 is active
     if (document.getElementById('module1').classList.contains('active')) {
-        videoStream.src = '/video_feed';
-        startPollingState();
+        startModule1Camera();
     }
 });
